@@ -1,8 +1,21 @@
 {
   "name": "@s-age/kernelee-devtools-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "WebSocket devtools bridge for kernelee: kernel-side connector + WS server (static asset serving included)",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/s-age/kernelee-devtools-bridge.git"
+  },
+  "homepage": "https://github.com/s-age/kernelee-devtools-bridge",
+  "keywords": [
+    "kernelee",
+    "devtools",
+    "control-flow",
+    "dispatch",
+    "websocket"
+  ],
   "publishConfig": {
     "access": "public"
   },
