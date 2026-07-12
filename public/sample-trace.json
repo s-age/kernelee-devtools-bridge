@@ -1,0 +1,77 @@
+[
+  {
+    "symbolId": "demo.receiveOrder",
+    "verb": "next",
+    "span": {
+      "id": "590eb5c1-c0e8-4dab-9293-677d74cbbda7"
+    },
+    "payload": "{\"orderId\":\"ord-1\"}",
+    "timestamp": 1783668109352,
+    "bufferSnapshot": [
+      {
+        "label": "invokeCount",
+        "value": "1"
+      }
+    ]
+  },
+  {
+    "symbolId": "demo.priceOrder",
+    "verb": "next",
+    "span": {
+      "id": "1596e08f-c308-4e77-b43a-0114b70bda6b"
+    },
+    "payload": "{\"kind\":\"next\",\"value\":{\"orderId\":\"ord-1\"}}",
+    "timestamp": 1783668109352,
+    "bufferSnapshot": [
+      {
+        "label": "invokeCount",
+        "value": "2"
+      }
+    ]
+  },
+  {
+    "symbolId": "demo.notifyEmail",
+    "verb": "next",
+    "span": {
+      "id": "57f9ca4c-ecb9-4f80-b6d3-33939ff231e0"
+    },
+    "payload": "{\"kind\":\"next\",\"value\":{\"kind\":\"next\",\"value\":{\"orderId\":\"ord-1\"},\"price\":42}}",
+    "timestamp": 1783668109352,
+    "bufferSnapshot": [
+      {
+        "label": "invokeCount",
+        "value": "4"
+      }
+    ]
+  },
+  {
+    "symbolId": "demo.notifySms",
+    "verb": "next",
+    "span": {
+      "id": "1e8a2cc5-b86d-472e-8321-428306ea2d69"
+    },
+    "payload": "{\"kind\":\"next\",\"value\":{\"kind\":\"next\",\"value\":{\"orderId\":\"ord-1\"},\"price\":42}}",
+    "timestamp": 1783668109352,
+    "bufferSnapshot": [
+      {
+        "label": "invokeCount",
+        "value": "4"
+      }
+    ]
+  },
+  {
+    "symbolId": "demo.restock",
+    "verb": "next",
+    "span": {
+      "id": "a8d3fbbd-6e33-462f-9bd4-ac4eceab96f5"
+    },
+    "payload": "{\"orderId\":\"ord-2\"}",
+    "timestamp": 1783668109352,
+    "bufferSnapshot": [
+      {
+        "label": "invokeCount",
+        "value": "5"
+      }
+    ]
+  }
+]

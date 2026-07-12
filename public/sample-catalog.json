@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 4,
+  "endpoints": [
+    {
+      "key": "demo.checkout",
+      "title": "Checkout",
+      "kind": "endpoint",
+      "note": "Sample: pipe(symbol) → pipe(function)(divert) → fork(branches)(defineCallable branches)",
+      "divertedFrom": [],
+      "stages": [
+        {
+          "kind": "pipe(symbol)",
+          "symbolId": "demo.receiveOrder",
+          "note": "Receive an order",
+          "divertsTo": []
+        },
+        {
+          "kind": "pipe(symbol)",
+          "symbolId": "demo.priceOrder",
+          "note": "Calculate the price",
+          "divertsTo": []
+        },
+        {
+          "kind": "pipe(function)",
+          "note": "Divert to restock-wait when out of stock",
+          "divertsTo": [
+            "demo.restock",
+            "demo.legacyCheckout"
+          ],
+          "handlerName": "outOfStockSwitch"
+        },
+        {
+          "kind": "fork(branches)",
+          "divertsTo": [],
+          "branches": [
+            [
+              {
+                "kind": "pipe(symbol)",
+                "symbolId": "Demo.Notify.email",
+                "note": "Send an email notification",
+                "divertsTo": []
+              }
+            ],
+            [
+              {
+                "kind": "pipe(symbol)",
+                "symbolId": "Demo.Notify.sms",
+                "note": "Send an SMS notification (kernel-composing)",
+                "divertsTo": []
+              },
+              {
+                "kind": "effect(function)",
+                "divertsTo": [],
+                "handlerName": "recordSmsSent"
+              }
+            ]
+          ],
+          "branchArity": {
+            "kind": "fixed",
+            "count": 2
+          }
+        },
+        {
+          "kind": "map(function)",
+          "divertsTo": [],
+          "handlerName": "joinNotifyResults"
+        }
+      ]
+    },
+    {
+      "key": "demo.restock",
+      "title": "Restock wait",
+      "kind": "divertTarget",
+      "note": "Sample divertTarget",
+      "divertedFrom": [
+        "demo.checkout"
+      ],
+      "stages": [
+        {
+          "kind": "pipe(symbol)",
+          "symbolId": "demo.priceOrder",
+          "note": "Calculate the price",
+          "divertsTo": []
+        }
+      ]
+    }
+  ],
+  "symbols": [
+    {
+      "symbolId": "demo.receiveOrder",
+      "bound": true,
+      "usedByEndpoints": [
+        "demo.checkout"
+      ]
+    },
+    {
+      "symbolId": "demo.priceOrder",
+      "bound": true,
+      "usedByEndpoints": [
+        "demo.checkout",
+        "demo.restock"
+      ]
+    },
+    {
+      "symbolId": "Demo.Notify.email",
+      "bound": true,
+      "usedByEndpoints": [
+        "demo.checkout"
+      ]
+    },
+    {
+      "symbolId": "Demo.Notify.sms",
+      "bound": true,
+      "usedByEndpoints": [
+        "demo.checkout"
+      ]
+    }
+  ],
+  "unresolvedDivertTargets": [
+    "demo.legacyCheckout"
+  ],
+  "unlistedBoundSymbols": []
+}

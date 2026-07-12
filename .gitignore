@@ -1,0 +1,7 @@
+node_modules/
+dist/
+public/vendor/
+public/panel.js
+public/panel.js.map
+public/panel.css
+public/panel.css.map
