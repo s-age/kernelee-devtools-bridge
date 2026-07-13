@@ -19,7 +19,7 @@ import * as appStyles from '../styles/App.css.js';
 import * as sharedStyles from '../styles/shared.css.js';
 import * as timelineStyles from '../styles/Timeline.css.js';
 
-const EMPTY_DOC: WiringGraphDocument = { schemaVersion: 4, endpoints: [], symbols: [], unresolvedDivertTargets: [], unlistedBoundSymbols: [] };
+const EMPTY_DOC: WiringGraphDocument = { schemaVersion: 5, endpoints: [], symbols: [], unresolvedDivertTargets: [], unlistedBoundSymbols: [] };
 
 export function App() {
   // MARK: - Wiring-graph / catalog state

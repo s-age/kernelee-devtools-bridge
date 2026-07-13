@@ -26,6 +26,18 @@ declare global {
     children?: RelaphGraphNode[];
   }
 
+  /**
+   * A confluence "join" edge — draws a connector from `from` (a tracked branch's tail node id)
+   * to `to` (the post-fork continuation node id, repositioned by relaph to sit centered below
+   * its sources). Mirrors relaph's own `JoinEdge`. Untracked (`.spawn`) branches never appear
+   * as a `from` here — they dead-end with no join, which is the whole point (see `buildChain`).
+   */
+  interface RelaphJoinEdge {
+    from: string;
+    to: string;
+    style?: { color?: string; width?: number };
+  }
+
   interface RelaphViewport {
     scale: number;
     tx: number;
@@ -45,7 +57,7 @@ declare global {
   }
 
   interface RelaphRelationGraph {
-    setData(root: RelaphGraphNode): void;
+    setData(root: RelaphGraphNode, joinEdges?: RelaphJoinEdge[]): void;
     refresh(): void;
     fit(padding?: number): void;
     zoomBy(factor: number): void;

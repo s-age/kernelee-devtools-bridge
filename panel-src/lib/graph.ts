@@ -81,12 +81,38 @@ export interface BuildTreeCtx {
   readonly partKindByHandler: ReadonlyMap<string, string>;
 }
 
+/** Walk a chain built by `buildChain` down to its deepest node. `buildChain` always appends the
+ *  continuation (if any) as the LAST entry of `children` — for a plain stage that's its sole
+ *  child, for a `fork(branches)` stage it's the last of `[...branchChains, continuation]` — so
+ *  repeatedly following the last child reaches the chain's true tail regardless of any nested
+ *  fork/confluence along the way (the nested fork's own continuation is just another node in the
+ *  same walk). */
+function chainTail(node: RelaphGraphNode): RelaphGraphNode {
+  let tail = node;
+  while (tail.children && tail.children.length > 0) {
+    tail = tail.children[tail.children.length - 1]!;
+  }
+  return tail;
+}
+
 /** One stage -> one GraphNode, continuing via a single 'bottom' child (the next stage in the same
  *  sequence). A `fork` stage's own branches are additional 'bottom' siblings alongside that
  *  continuation. The id grammar
  *  (`${idPrefix}::${index}`, branches `${id}::b${bi}`) IS the positional join key
- *  `wireSiteByPath` reads (see `docs/wire-links-positional-join-on-node-id-grammar.md`); do not change it. */
-export function buildChain(stages: readonly StageDescriptor[], index: number, idPrefix: string, ctx: BuildTreeCtx): RelaphGraphNode | null {
+ *  `wireSiteByPath` reads (see `docs/wire-links-positional-join-on-node-id-grammar.md`); do not change it.
+ *
+ *  `joinEdges` is an out-parameter (pushed to, not read): for every `fork(branches)` stage that
+ *  has a continuation, each TRACKED branch's tail feeds a join edge into that continuation — the
+ *  visual "diamond" convergence. Untracked (`.spawn`) branches never push a join edge; they must
+ *  dead-end (see `docs/...` fork/join design — a fork always joins all tracked branches, which is
+ *  exactly why untracked branches live in a separate array). */
+export function buildChain(
+  stages: readonly StageDescriptor[],
+  index: number,
+  idPrefix: string,
+  ctx: BuildTreeCtx,
+  joinEdges: RelaphJoinEdge[],
+): RelaphGraphNode | null {
   if (index >= stages.length) return null;
   const stage = stages[index]!;
   const id = `${idPrefix}::${index}`;
@@ -105,19 +131,54 @@ export function buildChain(stages: readonly StageDescriptor[], index: number, id
         : { fill: stageFill(stage, ctx) },
     children: [],
   };
-  const continuation = buildChain(stages, index + 1, idPrefix, ctx);
-  if (stage.kind === 'fork(branches)' && !ctx.mainLineOnly && stage.branches && stage.branches.length > 0) {
-    const branchChains = stage.branches
-      .map((branchStages, bi) => buildChain(branchStages, 0, `${id}::b${bi}`, ctx))
+  const continuation = buildChain(stages, index + 1, idPrefix, ctx, joinEdges);
+  if (stage.kind === 'fork(branches)' && !ctx.mainLineOnly) {
+    // Tracked branches render exactly as before; untracked (detached) branches
+    // render alongside them but marked distinctly — a `.spawn`/`fork([], [x])`
+    // stage has an empty tracked set and only detached branches, so both must
+    // be considered (not just `stage.branches.length > 0`).
+    const trackedChains = (stage.branches ?? [])
+      .map((branchStages, bi) => buildChain(branchStages, 0, `${id}::b${bi}`, ctx, joinEdges))
       .filter((n): n is RelaphGraphNode => n !== null);
-    node.children = continuation ? [...branchChains, continuation] : branchChains;
+    const untrackedChains = (stage.untrackedBranches ?? [])
+      .map((branchStages, bi) => buildChain(branchStages, 0, `${id}::u${bi}`, ctx, joinEdges))
+      .filter((n): n is RelaphGraphNode => n !== null)
+      .map(markDetached);
+    const branchChains = [...trackedChains, ...untrackedChains];
+    if (branchChains.length > 0) {
+      node.children = continuation ? [...branchChains, continuation] : branchChains;
+    } else if (continuation) {
+      node.children = [continuation];
+    }
+    if (continuation) {
+      for (const branchRoot of trackedChains) {
+        joinEdges.push({ from: chainTail(branchRoot).id, to: continuation.id });
+      }
+    }
   } else if (continuation) {
     node.children = [continuation];
   }
   return node;
 }
 
-export function buildEndpointTree(endpoint: WiringEndpoint, ctx: BuildTreeCtx): RelaphGraphNode {
+/** Mark a detached (untracked) branch subtree's root distinctly from a tracked
+ * branch — a `⇢` label prefix ("fired off to the side") plus a dashed-intent
+ * amber stroke. Additive: tracked branch nodes are never touched. */
+function markDetached(node: RelaphGraphNode): RelaphGraphNode {
+  return {
+    ...node,
+    label: node.label === undefined ? node.label : `⇢ ${node.label}`,
+    style: { ...(node.style ?? {}), stroke: '#d97706', strokeWidth: node.style?.strokeWidth ?? 1.5 },
+  };
+}
+
+export interface EndpointTree {
+  readonly root: RelaphGraphNode;
+  /** Confluence join edges collected while walking the endpoint's stages — see `buildChain`. */
+  readonly joinEdges: RelaphJoinEdge[];
+}
+
+export function buildEndpointTree(endpoint: WiringEndpoint, ctx: BuildTreeCtx): EndpointTree {
   const root: RelaphGraphNode = {
     id: `${endpoint.key}::__root`,
     label: endpoint.title,
@@ -127,9 +188,10 @@ export function buildEndpointTree(endpoint: WiringEndpoint, ctx: BuildTreeCtx): 
     style: ctx.selectedEntryEndpoint === endpoint ? { stroke: '#2563eb', strokeWidth: 2.5 } : undefined,
     children: [],
   };
-  const chain = buildChain(endpoint.stages, 0, endpoint.key, ctx);
+  const joinEdges: RelaphJoinEdge[] = [];
+  const chain = buildChain(endpoint.stages, 0, endpoint.key, ctx, joinEdges);
   if (chain) root.children!.push(chain);
-  return root;
+  return { root, joinEdges };
 }
 
 /** relaph's "select an endpoint" placeholder tree, shown when no endpoint is selected. */

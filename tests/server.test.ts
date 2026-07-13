@@ -23,7 +23,7 @@ function rawGet(port: number, rawPath: string): Promise<{ status: number }> {
 }
 
 const CATALOG: WiringGraphDocument = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   endpoints: [
     { key: 'root', title: 'root pipe', kind: 'endpoint', divertedFrom: [], stages: [] },
   ],

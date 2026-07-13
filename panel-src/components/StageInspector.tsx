@@ -59,6 +59,14 @@ export function StageInspector({
             </dd>
           </>
         )}
+        {stage.untrackedBranches !== undefined && stage.untrackedBranches.length > 0 && (
+          <>
+            <dt className={styles.dt}>untracked</dt>
+            <dd className={styles.dd}>
+              {stage.untrackedBranches.length} detached branch{stage.untrackedBranches.length === 1 ? '' : 'es'} (fire-and-forget)
+            </dd>
+          </>
+        )}
         {symbolEntry?.declaration?.site !== undefined && (
           <SiteRow term="declaration" site={symbolEntry.declaration.site} url={editorUrl(symbolEntry.declaration.site)} editorLabel={editorLabel} />
         )}

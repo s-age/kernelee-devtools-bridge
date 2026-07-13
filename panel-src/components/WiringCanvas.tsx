@@ -91,12 +91,12 @@ export function WiringCanvas({
     const structural: StructuralKey = { endpoint, mainLineOnly, collapsed, cardSize };
     const isStructural = !sameStructural(prevStructuralRef.current, structural);
     const ctx: BuildTreeCtx = { collapsed, mainLineOnly, cardSize, selectedStage, selectedEntryEndpoint, partColors, partKindByHandler };
-    const tree = endpoint ? buildEndpointTree(endpoint, ctx) : emptyTree();
+    const { root: tree, joinEdges } = endpoint ? buildEndpointTree(endpoint, ctx) : { root: emptyTree(), joinEdges: [] as RelaphJoinEdge[] };
     if (isStructural) {
-      graph.setData(tree);
+      graph.setData(tree, joinEdges);
     } else {
       const { scale, tx, ty } = graph.viewport;
-      graph.setData(tree);
+      graph.setData(tree, joinEdges);
       graph.viewport.setScale(scale);
       graph.viewport.setTranslate(tx, ty);
     }

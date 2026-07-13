@@ -39,6 +39,9 @@ export function buildIndexJoin(indexDoc: IndexDoc): IndexJoin {
         sites.set(handler.functionName, handler.site);
       }
       (stage.branches ?? []).forEach((branch, bi) => visitStages(branch, `${id}::b${bi}`));
+      // Detached branches carry real wire sites / named handlers too — walk them
+      // like tracked branches so a `.spawn`/untracked subtree is not dropped.
+      (stage.untrackedBranches ?? []).forEach((branch, bi) => visitStages(branch, `${id}::u${bi}`));
     });
   };
 

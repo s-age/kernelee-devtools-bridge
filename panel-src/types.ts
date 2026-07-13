@@ -60,6 +60,10 @@ export interface IndexStage {
   readonly wireSite?: string;
   readonly handler?: IndexHandler;
   readonly branches?: readonly (readonly IndexStage[])[];
+  /** Detached (untracked) fork branches — a `.spawn(x)` / `fork([], [x])` stage
+   * (schemaVersion 5). A walk over `branches` must also cover this, or the
+   * detached subtree's wire sites / handlers silently vanish from the join. */
+  readonly untrackedBranches?: readonly (readonly IndexStage[])[];
 }
 
 export interface IndexDriveSite {

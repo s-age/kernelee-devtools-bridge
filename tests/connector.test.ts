@@ -6,7 +6,7 @@ import { startBridgeServer, type BridgeServer } from '../src/server.js';
 import { collectMessages, waitForMessage, waitForOpen } from './support.js';
 
 const CATALOG: WiringGraphDocument = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   endpoints: [],
   symbols: [],
   unresolvedDivertTargets: [],
