@@ -116,4 +116,11 @@ export interface PanelConfig {
   readonly repoRoot?: string;
   readonly editors?: readonly Partial<EditorDef>[];
   readonly defaultEditor?: string;
+  /**
+   * The bridge's effective `--trace-cap` (mirrors its own `DEFAULT_TRACE_CAP`), injected as a
+   * runtime fact the same way `repoRoot` is — see `servePanelConfig` in `src/server.ts`. Absent
+   * (bridge launched without `--trace-cap`, or panel served standalone/offline) → the panel falls
+   * back to its own built-in default (`panel-src/lib/trace.ts`'s `TRACE_CAP`).
+   */
+  readonly traceCap?: number;
 }

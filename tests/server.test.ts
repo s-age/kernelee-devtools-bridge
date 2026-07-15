@@ -204,6 +204,33 @@ describe('static file serving', () => {
     await expect(bare.json()).resolves.toEqual({ repoRoot: '/repo/root' });
   });
 
+  it('merges traceCap into /panel-config.json — the panel follows the bridge\'s --trace-cap', async () => {
+    publicDir = await mkdtemp(join(tmpdir(), 'bridge-public-'));
+    await writeFile(join(publicDir, 'index.html'), '<h1>ok</h1>');
+    const configPath = join(publicDir, 'panel.config.json');
+    // A traceCap key in the file itself is overwritten: it is a runtime fact, not a repo one.
+    await writeFile(configPath, '{"partColors":{"switch":"#ff0000"},"traceCap":50}');
+    server = await startBridgeServer({ port: 0, publicDir, panelConfigPath: configPath, traceCap: 1000 });
+
+    const merged = await fetch(`http://localhost:${server.port}/panel-config.json`);
+    expect(merged.status).toBe(200);
+    await expect(merged.json()).resolves.toEqual({
+      partColors: { switch: '#ff0000' },
+      traceCap: 1000,
+    });
+
+    // traceCap not passed at all, and the committed file itself carries no traceCap — the key
+    // must be absent (not defaulted), so the panel falls back to its own built-in default (which
+    // matches the bridge's own unset-default).
+    await server.close();
+    const noCapConfigPath = join(publicDir, 'panel.no-cap.config.json');
+    await writeFile(noCapConfigPath, '{"partColors":{"switch":"#ff0000"}}');
+    server = await startBridgeServer({ port: 0, publicDir, panelConfigPath: noCapConfigPath });
+    const withoutCap = await fetch(`http://localhost:${server.port}/panel-config.json`);
+    const body = (await withoutCap.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('traceCap');
+  });
+
   it('rejects a path-traversal attempt with 403 instead of serving a file outside publicDir', async () => {
     publicDir = await mkdtemp(join(tmpdir(), 'bridge-public-'));
     await writeFile(join(publicDir, 'index.html'), '<h1>ok</h1>');

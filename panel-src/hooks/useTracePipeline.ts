@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import type { BridgeTraceEntry, TabId } from '../types.js';
-import { trimTraceEntries } from '../lib/trace.js';
+import { TRACE_CAP, trimTraceEntries } from '../lib/trace.js';
 
 /**
  * The trace timeline's rAF-coalesced, hidden-tab-skipping ingestion pipeline. The mutable ring
@@ -11,8 +11,13 @@ import { trimTraceEntries } from '../lib/trace.js';
  * showing. `setActiveTabHint` must be called synchronously from the tab-click handler (not via a
  * `useEffect` on an `activeTab` prop) so the very same click that reveals the tab can also
  * trigger the catch-up flush without racing React's own commit timing.
+ *
+ * `traceCap` may change after mount (it typically arrives asynchronously from
+ * `/panel-config.json`, after the initial render already ran with the offline fallback) — it is
+ * mirrored into `capRef` on every render so `pushTraceEntry`'s stable `useCallback` closure always
+ * reads the latest value without needing to be re-created.
  */
-export function useTracePipeline() {
+export function useTracePipeline(traceCap: number = TRACE_CAP) {
   const [traceEntries, setTraceEntries] = useState<readonly BridgeTraceEntry[]>([]);
   const [usingSampleTrace, setUsingSampleTrace] = useState(true);
   const [selectedTraceEntry, setSelectedTraceEntryState] = useState<BridgeTraceEntry | null>(null);
@@ -25,6 +30,8 @@ export function useTracePipeline() {
   const inspectorDirtyRef = useRef(false);
   const scheduledRef = useRef(false);
   const activeTabRef = useRef<TabId>('wiring');
+  const capRef = useRef(traceCap);
+  capRef.current = traceCap;
 
   const flush = useCallback(() => {
     scheduledRef.current = false;
@@ -48,7 +55,7 @@ export function useTracePipeline() {
 
   const pushTraceEntry = useCallback(
     (entry: BridgeTraceEntry) => {
-      bufferRef.current = trimTraceEntries([...bufferRef.current, entry]) as BridgeTraceEntry[];
+      bufferRef.current = trimTraceEntries([...bufferRef.current, entry], capRef.current) as BridgeTraceEntry[];
       if (selectedRef.current && !bufferRef.current.includes(selectedRef.current)) {
         selectedRef.current = null;
         inspectorDirtyRef.current = true; // selection was evicted — only case a new entry affects the inspector

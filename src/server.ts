@@ -4,6 +4,7 @@ import { dirname, extname, join, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket as WsClient } from 'ws';
 import type { BridgeMessage } from './protocol.js';
+import { createTracePersistence, DEFAULT_TRACE_CAP } from './tracePersistence.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,26 @@ export interface BridgeServerOptions {
    * unset → the panel shows sites as plain text (links need an absolute path).
    */
   readonly repoRoot?: string;
+  /**
+   * Path to write the live `trace` stream to, as a rolling `{ entries: TraceEntry[] }` JSON file
+   * matching kernelee's own `TraceStateValue` shape exactly — this is what lets the
+   * `arch_monitor` MCP tool (which otherwise only reads a `TraceState` dump file) answer questions
+   * about the *current* running session, by pointing `KERNEL_INTROSPECT_TRACE_PATH` at it. Written
+   * atomically (temp file + `rename`) and throttled — see `tracePersistence.ts`. Unset → no
+   * persistence at all: this server-level option stays opt-in (unlike the CLI, which defaults it
+   * on — see `cli.ts`), matching `introspectIndexPath`/`panelConfigPath`'s own unset-means-off
+   * contract rather than `port`'s always-on-a-value one.
+   */
+  readonly traceOutPath?: string;
+  /**
+   * Ring capacity for the file above — oldest entries roll off once exceeded. Ignored when
+   * `traceOutPath` is unset. Defaults to {@link DEFAULT_TRACE_CAP} when `traceOutPath` *is* set,
+   * same as `port`'s own always-has-a-value default. Also surfaced verbatim (i.e. only when
+   * actually set — see {@link servePanelConfig}) into `/panel-config.json` as `traceCap`, so the
+   * panel's own retention/display follows this same number instead of carrying a second, unrelated
+   * hardcoded cap — see `panel-src/lib/trace.ts`'s `TRACE_CAP`.
+   */
+  readonly traceCap?: number;
 }
 
 export interface BridgeServer {
@@ -122,14 +143,20 @@ async function serveConsumerJson(
 /**
  * Serves the panel config with the server's runtime facts merged in: the
  * consumer's committed JSON (missing/unreadable/invalid → `{}`, same contract
- * as before) plus `repoRoot` when configured. The merge happens here rather
- * than in the file because `repoRoot` is a fact of the running environment,
- * not of the repo — see {@link BridgeServerOptions.repoRoot}. A `repoRoot`
- * key in the file itself is overwritten for the same reason.
+ * as before) plus `repoRoot` and `traceCap` when configured. The merge happens
+ * here rather than in the file because both are facts of the running
+ * environment, not of the repo — see {@link BridgeServerOptions.repoRoot} and
+ * {@link BridgeServerOptions.traceCap}. `traceCap` is merged in only when the
+ * caller actually passed one (an omitted `--trace-cap` must NOT force a value
+ * here — the panel falls back to its own built-in default, the same
+ * `DEFAULT_TRACE_CAP` the file ring itself defaults to, so the two stay equal
+ * whether or not the flag was given). A `repoRoot`/`traceCap` key in the file
+ * itself is overwritten for the same reason as `repoRoot` always was.
  */
 async function servePanelConfig(
   path: string | undefined,
   repoRoot: string | undefined,
+  traceCap: number | undefined,
   res: import('node:http').ServerResponse,
 ): Promise<void> {
   let config: Record<string, unknown> = {};
@@ -143,7 +170,14 @@ async function servePanelConfig(
       // unreadable or invalid JSON — the `{}` base stands
     }
   }
-  const body = repoRoot === undefined ? JSON.stringify(config) : JSON.stringify({ ...config, repoRoot });
+  let merged: Record<string, unknown> = config;
+  if (repoRoot !== undefined) {
+    merged = { ...merged, repoRoot };
+  }
+  if (traceCap !== undefined) {
+    merged = { ...merged, traceCap };
+  }
+  const body = JSON.stringify(merged);
   res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(body);
 }
@@ -171,7 +205,7 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       return;
     }
     if (pathname === '/panel-config.json') {
-      void servePanelConfig(options.panelConfigPath, options.repoRoot, res);
+      void servePanelConfig(options.panelConfigPath, options.repoRoot, options.traceCap, res);
       return;
     }
     void serveStatic(publicDir, req.url ?? '/', res);
@@ -181,6 +215,10 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
   // Cached as the raw text it arrived as, not the parsed object — replaying
   // it to late joiners and rebroadcasting it need no re-serialization.
   let cachedCatalogText: string | undefined;
+  // Only allocated when a target path is configured — see `BridgeServerOptions.traceOutPath`.
+  const tracePersistence = options.traceOutPath === undefined
+    ? undefined
+    : createTracePersistence({ path: options.traceOutPath, cap: options.traceCap ?? DEFAULT_TRACE_CAP });
 
   http.on('upgrade', (req, socket, head) => {
     if (req.url !== WS_PATH) {
@@ -209,6 +247,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       }
       if (message.type === 'catalog') {
         cachedCatalogText = text;
+      }
+      if (message.type === 'trace') {
+        // Additive to the relay below, never a replacement for it: persistence failing must not
+        // stop other panel clients from seeing the entry live.
+        tracePersistence?.record(message.entry);
       }
       // Forward the original text verbatim — no need to re-serialize what
       // was only just parsed to inspect `type`.
@@ -241,6 +284,9 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       await new Promise<void>((resolve, reject) => {
         http.close((error) => (error ? reject(error) : resolve()));
       });
+      // Flush after the sockets are down, not before: a straggling `trace` message processed
+      // during shutdown should still make it into the final write.
+      await tracePersistence?.close();
     },
   };
 }

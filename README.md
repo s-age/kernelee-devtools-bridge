@@ -53,7 +53,10 @@ extension — just a WS server + a static HTML page**, so:
    npm run dev        # the app's own dev server
    ```
 
-   To change the port, pass it like `npm run devtools -- --port 8080`.
+   To pass a flag through to the bridge, use npm's `--` separator — **without it, npm
+   swallows the flag itself instead of forwarding it to the script**. So `npm run devtools
+   -- --port 8080` to change the port, or `npm run devtools -- --trace-cap 500` to retain
+   more trace entries (default 300; see the [CLI](#cli) section for the memory tradeoff).
 
 4. In the app's entry point (development only — guard with `import.meta.env.DEV`, for example),
    connect the kernel to the connector:
@@ -144,11 +147,20 @@ buffer caps retention on both the client and the server side.
 ## CLI
 
 ```sh
-kernelee-devtools-bridge [--port 7331]
+kernelee-devtools-bridge [--port 7331] [--trace-cap 300]
 ```
 
 `npm run devtools` invokes this CLI as-is. For apps that don't use a bundler / run remotely and
 just need to be attached to after the fact, invoking the CLI directly works the same way.
+
+`--trace-cap N` sets how many of the most-recent trace entries are retained — one knob bounding
+**both** the persisted trace file (what `arch_monitor` reads) and the panel's timeline, kept in
+sync (the panel follows this value, injected into `/panel-config.json`). Raising it costs only
+**linear memory, never extra per-call CPU**: each entry is bounded to ~1KB (payloads are truncated
+and binary buffers summarized up front), so a larger cap adds ~N×1KB of retained memory and no hot-
+path cost. Default 300; lower it (e.g. `--trace-cap 5`) for a near-zero footprint. It does **not**
+touch the app's own in-process kernel ring (`KernelBuildOptions.traceCap`) or the connector's
+offline send-backlog cap (`pendingCap`) — those are deliberately independent knobs.
 
 ## License
 

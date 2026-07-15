@@ -3,7 +3,7 @@ import type { BridgeMessage, CardSize, EditorDef, IndexJoin, PanelConfig, StageD
 import { BUILTIN_EDITORS, EDITOR_STORAGE_KEY, editorUrl as buildEditorUrl, mergeEditors, pickInitialEditorId } from '../lib/editors.js';
 import { buildIndexJoin, emptyIndexJoin } from '../lib/indexJoin.js';
 import { DEFAULT_PART_COLORS } from '../lib/graph.js';
-import { buildForest } from '../lib/trace.js';
+import { buildForest, TRACE_CAP } from '../lib/trace.js';
 import { readStorageItem, writeStorageItem } from '../lib/storage.js';
 import { useLayoutPrefs } from '../hooks/useLayoutPrefs.js';
 import { useTracePipeline } from '../hooks/useTracePipeline.js';
@@ -41,13 +41,14 @@ export function App() {
   const [repoRoot, setRepoRoot] = useState<string | null>(null);
   const [editors, setEditors] = useState<readonly EditorDef[]>(BUILTIN_EDITORS);
   const [selectedEditorId, setSelectedEditorId] = useState<string>(BUILTIN_EDITORS[0]!.id);
+  const [traceCap, setTraceCap] = useState<number>(TRACE_CAP);
 
   // MARK: - WS / tabs
   const [wsStatus, setWsStatus] = useState<WsStatus>('idle');
   const [activeTab, setActiveTab] = useState<TabId>('wiring');
 
   // MARK: - Trace pipeline (rAF-coalesced, hidden-tab-skipping — see useTracePipeline)
-  const trace = useTracePipeline();
+  const trace = useTracePipeline(traceCap);
 
   // MARK: - Layout prefs (sidebar/inspector dock+size, drag-resize)
   const sidebarElRef = useRef<HTMLElement | null>(null);
@@ -168,6 +169,7 @@ export function App() {
       let nextPartColors = DEFAULT_PART_COLORS;
       let nextRepoRoot: string | null = null;
       let nextEditors: EditorDef[] = [...BUILTIN_EDITORS];
+      let nextTraceCap = TRACE_CAP;
       try {
         const config = (await (await fetch('/panel-config.json')).json()) as PanelConfig;
         if (config && typeof config === 'object') {
@@ -175,6 +177,7 @@ export function App() {
           if (typeof config.repoRoot === 'string') nextRepoRoot = config.repoRoot;
           if (Array.isArray(config.editors)) nextEditors = mergeEditors(nextEditors, config.editors);
           if (typeof config.defaultEditor === 'string') configDefaultEditor = config.defaultEditor;
+          if (typeof config.traceCap === 'number' && config.traceCap > 0) nextTraceCap = config.traceCap;
         }
       } catch {
         // defaults stay
@@ -186,6 +189,7 @@ export function App() {
       setRepoRoot(nextRepoRoot);
       setEditors(nextEditors);
       setSelectedEditorId(chosenEditorId);
+      setTraceCap(nextTraceCap);
 
       try {
         let res = await fetch('/introspect/index.json');
@@ -299,7 +303,7 @@ export function App() {
       <div className={`${appStyles.layout}${activeTab !== 'trace' ? ` ${appStyles.hidden}` : ''}`}>
         <div className={appStyles.main}>
           <div className={sharedStyles.toolbar}>
-            <span>{`${trace.traceEntries.length} / 300 entries${trace.usingSampleTrace ? ' (sample)' : ''}`}</span>
+            <span>{`${trace.traceEntries.length} / ${traceCap} entries${trace.usingSampleTrace ? ' (sample)' : ''}`}</span>
             <span className={sharedStyles.spacer} />
             <button onClick={trace.clearTrace}>Clear</button>
           </div>
