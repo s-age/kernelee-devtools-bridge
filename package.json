@@ -1,6 +1,6 @@
 {
   "name": "@s-age/kernelee-devtools-bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "WebSocket devtools bridge for kernelee: kernel-side connector + WS server (static asset serving included)",
   "type": "module",
   "license": "MIT",
