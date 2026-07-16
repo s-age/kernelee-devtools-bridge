@@ -1,7 +1,9 @@
 import type { CSSProperties, RefObject } from 'react';
-import type { EditorDef, IndexEndpoint, IndexSymbol, InspectorPosition, StageDescriptor, WiringEndpoint } from '../types.js';
+import type { EditorDef, IndexEndpoint, IndexGate, IndexSymbol, InspectorPosition, StageDescriptor, WiringEndpoint, WiringGuardEntry } from '../types.js';
+import type { SelectedGate } from '../lib/graph.js';
 import { EndpointInspector } from './EndpointInspector.js';
 import { StageInspector } from './StageInspector.js';
+import { GateInspector } from './GateInspector.js';
 import * as sharedStyles from '../styles/shared.css.js';
 import * as styles from '../styles/InspectorPanel.css.js';
 import * as bodyStyles from '../styles/InspectorBody.css.js';
@@ -17,8 +19,13 @@ export interface InspectorPanelProps {
   readonly selectedStage: StageDescriptor | null;
   readonly selectedStagePath: string | null;
   readonly selectedEntryEndpoint: WiringEndpoint | null;
+  readonly selectedGate: SelectedGate | null;
+  readonly guardsByTarget: ReadonlyMap<string, WiringGuardEntry>;
   readonly indexEndpointByKey: ReadonlyMap<string, IndexEndpoint>;
   readonly indexSymbolById: ReadonlyMap<string, IndexSymbol>;
+  /** gateId -> the introspect index's gates[] entry (`IndexJoin.gates`) — the gate inspector's
+   *  source-link join (declared / handler body), degrading away on a miss like every index join. */
+  readonly indexGateById: ReadonlyMap<string, IndexGate>;
   readonly handlerSiteByName: ReadonlyMap<string, string>;
   readonly wireSiteByPath: ReadonlyMap<string, string>;
   readonly editorUrl: (site: string) => string | null;
@@ -40,8 +47,11 @@ export function InspectorPanel({
   selectedStage,
   selectedStagePath,
   selectedEntryEndpoint,
+  selectedGate,
+  guardsByTarget,
   indexEndpointByKey,
   indexSymbolById,
+  indexGateById,
   handlerSiteByName,
   wireSiteByPath,
   editorUrl,
@@ -85,7 +95,16 @@ export function InspectorPanel({
         </button>
       </div>
       <div className={styles.body}>
-        {selectedEntryEndpoint ? (
+        {selectedGate ? (
+          <GateInspector
+            gate={selectedGate}
+            index={guardsByTarget.get(selectedGate.targetId)?.gateIds.indexOf(selectedGate.gateId) ?? 0}
+            total={guardsByTarget.get(selectedGate.targetId)?.gateIds.length ?? 1}
+            indexGate={indexGateById.get(selectedGate.gateId)}
+            editorUrl={editorUrl}
+            editorLabel={editorLabel}
+          />
+        ) : selectedEntryEndpoint ? (
           <EndpointInspector endpoint={selectedEntryEndpoint} indexEndpointByKey={indexEndpointByKey} editorUrl={editorUrl} editorLabel={editorLabel} />
         ) : selectedStage ? (
           <StageInspector

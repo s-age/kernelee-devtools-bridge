@@ -65,6 +65,38 @@ export const verbDivert = style({
   color: '#b45309',
 });
 
+/** Gate verdict reading is binary (see `TimelineTree`'s own doc comment): `next` = allow, ANY
+ *  non-next (divert/fail/abort) = veto. `verbGateVeto` deliberately reuses `verbFail`'s red (a veto
+ *  IS a stop, regardless of which verb produced it) rather than minting a third color; `verbGateAllow`
+ *  gets the gate's own green so an allow still reads as "a gate ran here", not as a plain unstyled
+ *  `next`. */
+export const verbGateVeto = style({
+  background: '#fdecea',
+  color: '#b42318',
+});
+
+export const verbGateAllow = style({
+  background: '#e6f4ea',
+  color: '#1a7431',
+});
+
+/** `.gate-badge { ... }` — marks a trace row whose `symbolId` is in the gate-id set (App.tsx's
+ *  `gateIds`, joined from `doc.guards`), distinct from the verb pill: this says "this ROW is a
+ *  gate", the verb pill separately says "and here is how its verdict reads". */
+export const gateBadge = style({
+  fontSize: '0.65rem',
+  fontWeight: 600,
+  padding: '0.05rem 0.35rem',
+  borderRadius: '999px',
+  background: '#bfe6c2',
+  color: '#1a7431',
+  flexShrink: 0,
+});
+
+export const symbolGate = style({
+  fontStyle: 'italic',
+});
+
 export const ts = style({
   color: '#8c959f',
   fontSize: '0.75rem',

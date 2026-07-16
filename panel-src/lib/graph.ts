@@ -1,15 +1,23 @@
-import type { CardSize, StageDescriptor, WiringEndpoint } from '../types.js';
+import type { CardSize, StageDescriptor, WiringEndpoint, WiringGuardEntry } from '../types.js';
 
 /** Card fills per part kind — light washes with the label text on top. All 10 pairs validated
  *  CVD-separated (protan/deutan/tritan ΔE >= 15.5). Overridable per consumer repo via
  *  /panel-config.json's `partColors` (merged over these defaults). See
- *  `docs/part-kind-coloring-is-an-index-join.md`. */
+ *  `docs/part-kind-coloring-is-an-index-join.md`.
+ *
+ *  `gate` is NOT a part kind (it is never resolved via `partKindByHandler` / the index join — see
+ *  `stageFill`'s own doc comment): it colors the new gate node kind `buildEndpointTree` folds in
+ *  from `WiringGraphDocument.guards`, a fact the runtime wiring document itself carries, not a file
+ *  classification. Kept in the same table anyway because the legend enumerates `DEFAULT_PART_COLORS`
+ *  keys verbatim (`WiringCanvas`'s legend map) — adding it here is what makes it show up there
+ *  automatically. Chosen hue (green) sits clear of the other five (gray/yellow/purple/salmon/blue). */
 export const DEFAULT_PART_COLORS: Readonly<Record<string, string>> = {
   pipeline: '#f1f3f6',
   switch: '#fbe7a2',
   emitter: '#b1a0e6',
   mutator: '#f6c3bb',
   bridge: '#b3d6f9',
+  gate: '#bfe6c2',
 };
 
 export function isCompactibleAnonymous(stage: StageDescriptor): boolean {
@@ -71,12 +79,22 @@ export function cardWidth(fixed: number, cardSize: CardSize): number | 'fit-cont
   return cardSize === 'fit-content' ? 'fit-content' : fixed;
 }
 
+/** Identifies one gate node selection — `targetId` + `gateId` together (not `gateId` alone), since
+ *  the SAME gate id can legitimately guard more than one target (`guard(a, sameGate)` and
+ *  `guard(b, sameGate)` are both valid `KernelBuilder.guard` calls), so `gateId` alone would not
+ *  disambiguate which rendered node is selected when both appear in one view. */
+export interface SelectedGate {
+  readonly targetId: string;
+  readonly gateId: string;
+}
+
 export interface BuildTreeCtx {
   readonly collapsed: boolean;
   readonly mainLineOnly: boolean;
   readonly cardSize: CardSize;
   readonly selectedStage: StageDescriptor | null;
   readonly selectedEntryEndpoint: WiringEndpoint | null;
+  readonly selectedGate: SelectedGate | null;
   readonly partColors: Readonly<Record<string, string>>;
   readonly partKindByHandler: ReadonlyMap<string, string>;
 }
@@ -172,13 +190,50 @@ function markDetached(node: RelaphGraphNode): RelaphGraphNode {
   };
 }
 
+/** One gate node — `WiringGraphDocument.guards[].gateIds[index]`, guarding `targetId`. Rendered ON
+ *  the main line: the endpoint header stays the tree root, then the gate chain, then the first
+ *  stage — a gate is pre-handler (it runs BEFORE the pipe's first stage), so first-on-the-main-line
+ *  is the honest position, not a side annotation; the "not an ordinary stage" fact is carried by
+ *  the gate color/inspector, never by displacement off the spine. `direction: 'bottom'` matters:
+ *  relaph's `direction` says where THIS node attaches relative to its PARENT and defaults to
+ *  `'right'` — the original gate-wraps-root shape floated the whole spine off to the gate's right
+ *  for exactly that reason (the endpoint root carries no `direction`). Top-to-bottom order matches
+ *  fold execution order: gate 0 runs first, only its `next` verdict reaches gate 1, and only the
+ *  whole chain's `next` reaches the pipe at all — see kernel.ts's `gatedHandler` (kernelee core)
+ *  for the runtime fold this mirrors. Label = gateId (the join key a trace entry's own `symbolId`
+ *  matches back against — see `lib/trace.ts`). `child` is the next gate, the first stage, or
+ *  `null` for a guarded endpoint whose catalogued pipe has no stages. */
+function buildGateNode(gateId: string, targetId: string, index: number, ctx: BuildTreeCtx, child: RelaphGraphNode | null): RelaphGraphNode {
+  const isSelected = ctx.selectedGate !== null && ctx.selectedGate.targetId === targetId && ctx.selectedGate.gateId === gateId;
+  const fill = ctx.partColors.gate ?? DEFAULT_PART_COLORS.gate!;
+  return {
+    id: `${targetId}::__gate${index}`,
+    label: gateId,
+    width: cardWidth(220, ctx.cardSize),
+    height: 40,
+    direction: 'bottom',
+    baseline: 'center',
+    data: { kind: 'gate', targetId, gateId },
+    style: isSelected ? { fill, stroke: '#2563eb', strokeWidth: 2.5 } : { fill },
+    children: child ? [child] : [],
+  };
+}
+
 export interface EndpointTree {
   readonly root: RelaphGraphNode;
   /** Confluence join edges collected while walking the endpoint's stages — see `buildChain`. */
   readonly joinEdges: RelaphJoinEdge[];
 }
 
-export function buildEndpointTree(endpoint: WiringEndpoint, ctx: BuildTreeCtx): EndpointTree {
+/** `guardEntry` is `WiringGraphDocument.guards`'s entry for THIS endpoint's key (looked up by the
+ *  caller — see `App.tsx`'s `guardsByTarget`), or `null`/omitted for an endpoint no `guard()` call
+ *  ever named (the common case). `gateIds` stays in fold execution order — never re-sorted, the
+ *  same behavioral-contract discipline `GuardCatalogEntry` itself documents — and folds in as a
+ *  chain of gate nodes at the HEAD OF THE MAIN LINE, between the endpoint header (which stays the
+ *  tree root) and the pipe's first stage, one node per gate, so multiple gates on one target
+ *  render as a spine segment in the order they actually run (see `buildGateNode`'s own doc comment
+ *  on why on-the-spine is the honest position for a pre-handler veto). */
+export function buildEndpointTree(endpoint: WiringEndpoint, ctx: BuildTreeCtx, guardEntry?: WiringGuardEntry | null): EndpointTree {
   const root: RelaphGraphNode = {
     id: `${endpoint.key}::__root`,
     label: endpoint.title,
@@ -190,8 +245,25 @@ export function buildEndpointTree(endpoint: WiringEndpoint, ctx: BuildTreeCtx): 
   };
   const joinEdges: RelaphJoinEdge[] = [];
   const chain = buildChain(endpoint.stages, 0, endpoint.key, ctx, joinEdges);
-  if (chain) root.children!.push(chain);
+
+  const gateIds = guardEntry?.gateIds ?? [];
+  let head: RelaphGraphNode | null = chain;
+  for (let i = gateIds.length - 1; i >= 0; i--) {
+    head = buildGateNode(gateIds[i]!, endpoint.key, i, ctx, head);
+  }
+  if (head) root.children!.push(head);
   return { root, joinEdges };
+}
+
+/** `doc.guards[].targetId` entries that match no `endpoints[].key` — the wiring-graph twin of
+ *  kernelee's own `unanchoredGuardTarget` validation issue, computed here purely from what the
+ *  panel already has in hand (no need to import `validateWiringGraph` into a browser bundle for
+ *  one filter). Never dropped: the caller renders these as a separate, always-visible group (see
+ *  `WiringCanvas`'s unanchored overlay) rather than silently losing gates whose target the catalog
+ *  never names as an endpoint — "guard() targets are KernelSymbols, which may legitimately not be
+ *  catalogued" (kernelee's own `WiringGraphIssue` doc comment) applies here exactly the same way. */
+export function unanchoredGuards(guards: readonly WiringGuardEntry[], endpointKeys: ReadonlySet<string>): readonly WiringGuardEntry[] {
+  return guards.filter((g) => !endpointKeys.has(g.targetId));
 }
 
 /** relaph's "select an endpoint" placeholder tree, shown when no endpoint is selected. */

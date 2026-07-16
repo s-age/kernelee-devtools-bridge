@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 6,
   "endpoints": [
     {
       "key": "demo.checkout",
@@ -114,6 +114,16 @@
       "usedByEndpoints": [
         "demo.checkout"
       ]
+    }
+  ],
+  "guards": [
+    {
+      "targetId": "demo.checkout",
+      "gateIds": ["guard:demo.checkoutOpen", "guard:demo.rateLimit"]
+    },
+    {
+      "targetId": "demo.legacyGuardTarget",
+      "gateIds": ["guard:demo.legacyToggle"]
     }
   ],
   "unresolvedDivertTargets": [

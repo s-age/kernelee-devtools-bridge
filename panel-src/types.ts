@@ -4,9 +4,9 @@
 // (`BridgeMessage`/`BridgeTraceEntry`) IS duplicated rather than imported from `src/protocol.ts`:
 // panel-src is an independently bundled client tree (esbuild, browser target), so mirroring the
 // on-the-wire shape here keeps the two builds decoupled.
-import type { Span, StageDescriptor, TraceVerbKind, WiringEndpoint, WiringGraphDocument } from '@s-age/kernelee';
+import type { Span, StageDescriptor, TraceVerbKind, WiringEndpoint, WiringGraphDocument, WiringGuardEntry } from '@s-age/kernelee';
 
-export type { StageDescriptor, WiringEndpoint, WiringGraphDocument };
+export type { StageDescriptor, WiringEndpoint, WiringGraphDocument, WiringGuardEntry };
 
 /** Mirrors `src/protocol.ts`'s `BridgeTraceEntry` — one live `onTrace` callback's arguments,
  *  forwarded verbatim over the wire. */
@@ -88,10 +88,22 @@ export interface IndexSymbol {
   readonly implementation?: IndexSymbolSite;
 }
 
+/** One `gates[]` entry (kernel-introspect schema v11): the static-scan facts the runtime wiring
+ *  document deliberately lacks — where the `declareGate(...)` call lives and which named handler
+ *  it binds. Same join role `IndexStage.handler`/`wireSite` play for stage source links. */
+export interface IndexGate {
+  readonly id: string;
+  readonly declarationSite?: string;
+  readonly handler?: IndexHandler | null;
+}
+
 export interface IndexDoc {
   readonly parts?: readonly IndexPart[];
   readonly endpoints?: readonly IndexEndpoint[];
   readonly symbols?: readonly IndexSymbol[];
+  /** `null` = scanned by a pre-gate scanner (before index schema v11) — same null-vs-[] convention
+   *  as the index's own sections; both degrade to "no gate source links" here. */
+  readonly gates?: readonly IndexGate[] | null;
 }
 
 /** The join `buildIndexJoin` produces — see `docs/wire-links-positional-join-on-node-id-grammar.md`
@@ -107,6 +119,8 @@ export interface IndexJoin {
   readonly endpoints: ReadonlyMap<string, IndexEndpoint>;
   /** symbolId -> the index's symbols[] entry. */
   readonly symbols: ReadonlyMap<string, IndexSymbol>;
+  /** gateId -> the index's gates[] entry (declarationSite / named handler source links). */
+  readonly gates: ReadonlyMap<string, IndexGate>;
 }
 
 /** The shape `/panel-config.json` may hand the panel — every field optional/best-effort, same

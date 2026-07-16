@@ -1,4 +1,4 @@
-import type { IndexDoc, IndexEndpoint, IndexJoin, IndexStage, IndexSymbol } from '../types.js';
+import type { IndexDoc, IndexEndpoint, IndexGate, IndexJoin, IndexStage, IndexSymbol } from '../types.js';
 
 /** Empty join — the panel's "no index yet" state (before boot's fetch resolves, or on a
  *  permanent join miss). Uncolored (all-'pipeline') is a working state, never a broken one. */
@@ -9,10 +9,11 @@ export function emptyIndexJoin(): IndexJoin {
     wireSites: new Map(),
     endpoints: new Map(),
     symbols: new Map(),
+    gates: new Map(),
   };
 }
 
-/** Walks a kernel-introspect `index.json` into the five lookup maps the panel joins against the
+/** Walks a kernel-introspect `index.json` into the six lookup maps the panel joins against the
  *  runtime catalog with (the node-id grammar, kind-by-file resolution, and the "join miss just
  *  degrades" contract). See
  *  `docs/part-kind-coloring-is-an-index-join.md` and `docs/wire-links-positional-join-on-node-id-grammar.md`. */
@@ -22,8 +23,11 @@ export function buildIndexJoin(indexDoc: IndexDoc): IndexJoin {
   const wireSites = new Map<string, string>();
   const endpoints = new Map<string, IndexEndpoint>();
   const symbols = new Map<string, IndexSymbol>();
+  const gates = new Map<string, IndexGate>();
 
   for (const symbol of indexDoc.symbols ?? []) symbols.set(symbol.id, symbol);
+  // `gates` may be null (pre-v11 index: "not scanned") as well as absent — both degrade the same.
+  for (const gate of indexDoc.gates ?? []) gates.set(gate.id, gate);
 
   const kindByFile = new Map<string, string>();
   for (const part of indexDoc.parts ?? []) kindByFile.set(part.file, part.kind);
@@ -50,5 +54,5 @@ export function buildIndexJoin(indexDoc: IndexDoc): IndexJoin {
     visitStages(endpoint.stages, endpoint.key);
   }
 
-  return { kinds, sites, wireSites, endpoints, symbols };
+  return { kinds, sites, wireSites, endpoints, symbols, gates };
 }

@@ -23,11 +23,12 @@ function rawGet(port: number, rawPath: string): Promise<{ status: number }> {
 }
 
 const CATALOG: WiringGraphDocument = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   endpoints: [
     { key: 'root', title: 'root pipe', kind: 'endpoint', divertedFrom: [], stages: [] },
   ],
   symbols: [],
+  guards: [],
   unresolvedDivertTargets: [],
   unlistedBoundSymbols: [],
 };

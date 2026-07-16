@@ -112,9 +112,10 @@ describe('trace persistence', () => {
     const catalogMessage: BridgeMessage = {
       type: 'catalog',
       doc: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         endpoints: [],
         symbols: [],
+        guards: [],
         unresolvedDivertTargets: [],
         unlistedBoundSymbols: [],
       },

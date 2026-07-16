@@ -1,20 +1,91 @@
 {
   "note": "Sample slice of a kernel-introspect index — only the fields the panel's part-kind join reads (parts[].{file,kind} + endpoints[].stages[].handler.{functionName,site}). Served as the fallback when the bridge has no --index configured, and its handler names deliberately match sample-catalog.json's handlerName fields so the standalone demo shows all part-kind colors.",
   "parts": [
-    { "file": "demo/outOfStock.switch.ts", "kind": "switch", "name": "outOfStock", "usedBy": ["demo.checkout"] },
-    { "file": "demo/checkout.emitter.ts", "kind": "emitter", "name": "checkout", "usedBy": ["demo.checkout"] },
-    { "file": "demo/smsLog.mutator.ts", "kind": "mutator", "name": "smsLog", "usedBy": ["demo.checkout"] },
-    { "file": "demo/fulfillment.bridge.ts", "kind": "bridge", "name": "fulfillment", "usedBy": ["demo.checkout"] }
+    {
+      "file": "demo/outOfStock.switch.ts",
+      "kind": "switch",
+      "name": "outOfStock",
+      "usedBy": [
+        "demo.checkout"
+      ]
+    },
+    {
+      "file": "demo/checkout.emitter.ts",
+      "kind": "emitter",
+      "name": "checkout",
+      "usedBy": [
+        "demo.checkout"
+      ]
+    },
+    {
+      "file": "demo/smsLog.mutator.ts",
+      "kind": "mutator",
+      "name": "smsLog",
+      "usedBy": [
+        "demo.checkout"
+      ]
+    },
+    {
+      "file": "demo/fulfillment.bridge.ts",
+      "kind": "bridge",
+      "name": "fulfillment",
+      "usedBy": [
+        "demo.checkout"
+      ]
+    }
   ],
   "endpoints": [
     {
       "key": "demo.checkout",
       "stages": [
-        { "handler": { "functionName": "outOfStockSwitch", "site": "demo/outOfStock.switch.ts:12" } },
-        { "handler": { "functionName": "joinNotifyResults", "site": "demo/checkout.emitter.ts:8" } },
-        { "handler": { "functionName": "recordSmsSent", "site": "demo/smsLog.mutator.ts:5" } },
-        { "handler": { "functionName": "handoffToFulfillment", "site": "demo/fulfillment.bridge.ts:6" } }
+        {
+          "handler": {
+            "functionName": "outOfStockSwitch",
+            "site": "demo/outOfStock.switch.ts:12"
+          }
+        },
+        {
+          "handler": {
+            "functionName": "joinNotifyResults",
+            "site": "demo/checkout.emitter.ts:8"
+          }
+        },
+        {
+          "handler": {
+            "functionName": "recordSmsSent",
+            "site": "demo/smsLog.mutator.ts:5"
+          }
+        },
+        {
+          "handler": {
+            "functionName": "handoffToFulfillment",
+            "site": "demo/fulfillment.bridge.ts:6"
+          }
+        }
       ]
+    }
+  ],
+  "gates": [
+    {
+      "id": "guard:demo.checkoutOpen",
+      "declarationSite": "src/circuit/checkout/open.gate.ts:12",
+      "handler": {
+        "functionName": "checkoutOpenGate",
+        "site": "src/circuit/checkout/open.gate.ts:20"
+      }
+    },
+    {
+      "id": "guard:demo.rateLimit",
+      "declarationSite": "src/circuit/checkout/rateLimit.gate.ts:9",
+      "handler": null
+    },
+    {
+      "id": "guard:demo.legacyToggle",
+      "declarationSite": "src/circuit/legacy/toggle.gate.ts:7",
+      "handler": {
+        "functionName": "legacyToggleGate",
+        "site": "src/circuit/legacy/toggle.gate.ts:15"
+      }
     }
   ]
 }

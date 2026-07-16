@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BridgeMessage, CardSize, EditorDef, IndexJoin, PanelConfig, StageDescriptor, TabId, WiringEndpoint, WiringGraphDocument } from '../types.js';
+import type { BridgeMessage, CardSize, EditorDef, IndexJoin, PanelConfig, StageDescriptor, TabId, WiringEndpoint, WiringGraphDocument, WiringGuardEntry } from '../types.js';
 import { BUILTIN_EDITORS, EDITOR_STORAGE_KEY, editorUrl as buildEditorUrl, mergeEditors, pickInitialEditorId } from '../lib/editors.js';
 import { buildIndexJoin, emptyIndexJoin } from '../lib/indexJoin.js';
-import { DEFAULT_PART_COLORS } from '../lib/graph.js';
+import { DEFAULT_PART_COLORS, unanchoredGuards as computeUnanchoredGuards, type SelectedGate } from '../lib/graph.js';
 import { buildForest, TRACE_CAP } from '../lib/trace.js';
 import { readStorageItem, writeStorageItem } from '../lib/storage.js';
 import { useLayoutPrefs } from '../hooks/useLayoutPrefs.js';
@@ -19,7 +19,14 @@ import * as appStyles from '../styles/App.css.js';
 import * as sharedStyles from '../styles/shared.css.js';
 import * as timelineStyles from '../styles/Timeline.css.js';
 
-const EMPTY_DOC: WiringGraphDocument = { schemaVersion: 5, endpoints: [], symbols: [], unresolvedDivertTargets: [], unlistedBoundSymbols: [] };
+const EMPTY_DOC: WiringGraphDocument = {
+  schemaVersion: 6,
+  endpoints: [],
+  symbols: [],
+  guards: [],
+  unresolvedDivertTargets: [],
+  unlistedBoundSymbols: [],
+};
 
 export function App() {
   // MARK: - Wiring-graph / catalog state
@@ -29,6 +36,7 @@ export function App() {
   const [selectedStage, setSelectedStage] = useState<StageDescriptor | null>(null);
   const [selectedStagePath, setSelectedStagePath] = useState<string | null>(null);
   const [selectedEntryEndpoint, setSelectedEntryEndpoint] = useState<WiringEndpoint | null>(null);
+  const [selectedGate, setSelectedGate] = useState<SelectedGate | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [mainLineOnly, setMainLineOnly] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -61,6 +69,13 @@ export function App() {
     [currentDoc, selectedEndpointKey],
   );
   const endpointKeys = useMemo(() => new Set(currentDoc.endpoints.map((e) => e.key)), [currentDoc]);
+  // `guardsByTarget` covers EVERY guards[] entry (anchored or not) — the inspector's fold-order
+  // lookup (`index`/`total`) needs the unanchored ones too, not just the ones a tree node renders.
+  const guardsByTarget = useMemo(() => new Map(currentDoc.guards.map((g) => [g.targetId, g] as const)), [currentDoc]);
+  const unanchoredGuardEntries = useMemo(() => computeUnanchoredGuards(currentDoc.guards, endpointKeys), [currentDoc, endpointKeys]);
+  // Trace-tab gate join: gate ids gathered from `doc.guards` themselves — an id-set join, never a
+  // `guard:` prefix regex (the prefix is convention only, see kernelee's `declareGate` doc comment).
+  const gateIds = useMemo(() => new Set(currentDoc.guards.flatMap((g) => g.gateIds)), [currentDoc]);
   const editorLabel = (editors.find((e) => e.id === selectedEditorId) ?? editors[0])?.label ?? '';
   const editorUrl = useCallback(
     (site: string) => buildEditorUrl(site, { repoRoot, editors, selectedEditorId }),
@@ -74,6 +89,7 @@ export function App() {
     setSelectedStage(null);
     setSelectedStagePath(null);
     setSelectedEntryEndpoint(null);
+    setSelectedGate(null);
     const keys = new Set(doc.endpoints.map((e) => e.key));
     setNavigationHistory((prev) => prev.filter((k) => keys.has(k)));
     setSelectedEndpointKey((prev) => {
@@ -95,6 +111,7 @@ export function App() {
       setSelectedStage(null);
       setSelectedStagePath(null);
       setSelectedEntryEndpoint(null);
+      setSelectedGate(null);
     },
     [selectedEndpointKey],
   );
@@ -107,18 +124,28 @@ export function App() {
     setSelectedStage(null);
     setSelectedStagePath(null);
     setSelectedEntryEndpoint(null);
+    setSelectedGate(null);
   }, [navigationHistory]);
 
   const onSelectStage = useCallback((stage: StageDescriptor, path: string) => {
     setSelectedStage(stage);
     setSelectedStagePath(path);
     setSelectedEntryEndpoint(null);
+    setSelectedGate(null);
   }, []);
 
   const onSelectEntry = useCallback((endpoint: WiringEndpoint) => {
     setSelectedEntryEndpoint(endpoint);
     setSelectedStage(null);
     setSelectedStagePath(null);
+    setSelectedGate(null);
+  }, []);
+
+  const onSelectGate = useCallback((gate: SelectedGate) => {
+    setSelectedGate(gate);
+    setSelectedStage(null);
+    setSelectedStagePath(null);
+    setSelectedEntryEndpoint(null);
   }, []);
 
   const onEditorChange = useCallback((id: string) => {
@@ -272,10 +299,14 @@ export function App() {
               cardSize={cardSize}
               selectedStage={selectedStage}
               selectedEntryEndpoint={selectedEntryEndpoint}
+              selectedGate={selectedGate}
               partColors={partColors}
               partKindByHandler={indexJoin.kinds}
+              guardEntry={currentEndpoint ? (guardsByTarget.get(currentEndpoint.key) ?? null) : null}
+              unanchoredGuards={unanchoredGuardEntries}
               onSelectStage={onSelectStage}
               onSelectEntry={onSelectEntry}
+              onSelectGate={onSelectGate}
             />
           </div>
           <Resizer variant="inspector" dragging={layout.inspectorDragging} onPointerDown={layout.onInspectorResizerPointerDown} />
@@ -290,8 +321,11 @@ export function App() {
             selectedStage={selectedStage}
             selectedStagePath={selectedStagePath}
             selectedEntryEndpoint={selectedEntryEndpoint}
+            selectedGate={selectedGate}
+            guardsByTarget={guardsByTarget}
             indexEndpointByKey={indexJoin.endpoints}
             indexSymbolById={indexJoin.symbols}
+            indexGateById={indexJoin.gates}
             handlerSiteByName={indexJoin.sites}
             wireSiteByPath={indexJoin.wireSites}
             editorUrl={editorUrl}
@@ -313,13 +347,14 @@ export function App() {
                 forest={forest}
                 collapsedSpanIds={trace.collapsedSpanIds}
                 selectedTraceEntry={trace.selectedTraceEntry}
+                gateIds={gateIds}
                 onSelectEntry={trace.selectTraceEntry}
                 onToggleCollapse={trace.toggleSpanCollapse}
               />
             )}
           </div>
         </div>
-        <TraceInspector entry={trace.selectedTraceEntry} />
+        <TraceInspector entry={trace.selectedTraceEntry} isGate={trace.selectedTraceEntry ? gateIds.has(trace.selectedTraceEntry.symbolId) : false} />
       </div>
     </>
   );
