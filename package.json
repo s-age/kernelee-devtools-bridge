@@ -1,6 +1,6 @@
 {
   "name": "@s-age/kernelee-devtools-bridge",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "WebSocket devtools bridge for kernelee: kernel-side connector + WS server (static asset serving included)",
   "type": "module",
   "license": "MIT",
@@ -32,6 +32,10 @@
     "./connector": {
       "types": "./dist/connector.d.ts",
       "import": "./dist/connector.js"
+    },
+    "./trace-path": {
+      "types": "./dist/tracePath.d.ts",
+      "import": "./dist/tracePath.js"
     }
   },
   "bin": {
@@ -49,13 +53,13 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@s-age/kernelee": "*"
+    "@s-age/kernelee": ">=0.5.0"
   },
   "dependencies": {
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@s-age/kernelee": "^0.4.0",
+    "@s-age/kernelee": "^0.5.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -65,7 +69,7 @@
     "esbuild": "^0.28.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "relaph": "^0.3.0",
+    "relaph": "^0.4.0",
     "typescript": "^5.5.0",
     "vitest": "^3.0.0"
   }

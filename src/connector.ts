@@ -58,9 +58,9 @@ export interface BridgeConnectorOptions {
    * cap×1.25 trim (`src/trace.ts`'s `appendTraceEntry`) already guards
    * against on the buffer side. Defaults to {@link DEFAULT_PENDING_CAP}.
    * Does not apply to `catalog` sends — see {@link SendQueue} usage below:
-   * the pending catalog lives in its own single slot, never trimmed, so a
-   * long trace backlog can never push out the one message every panel needs
-   * to render anything at all.
+   * the latest catalog lives in its own single slot, never trimmed and never
+   * cleared once set, so a long trace backlog can never push out the one
+   * message every panel needs to render anything at all.
    */
   readonly pendingCap?: number;
   /**
@@ -85,7 +85,12 @@ export interface BridgeConnectorOptions {
 export interface BridgeConnector {
   /** Wire this straight into `KernelBuildOptions.onTrace` (with `tracing: true`). */
   readonly onTrace: TraceSink;
-  /** Send the static wiring-graph snapshot once, typically right after building the kernel. */
+  /**
+   * Send the static wiring-graph snapshot, typically once right after building the kernel. The
+   * connector keeps this as its `latestCatalog` for its own lifetime and re-sends the exact same
+   * stringified text on every (re)connect — callers do not need to call this again after a bridge
+   * server restart or any other reconnect; see protocol.ts's byte-identity contract.
+   */
   sendCatalog(doc: WiringGraphDocument): void;
   /** Stop reconnecting and close the current socket, if any. */
   close(): void;
@@ -125,13 +130,36 @@ export function connectDevtoolsBridge(options: BridgeConnectorOptions = {}): Bri
   if (watchBuffers.length > 0 && buffer === undefined) {
     throw new Error('connectDevtoolsBridge: watchBuffers was given but buffer was not — both or neither.');
   }
+  // Validate at birth: Buffer's cell set is frozen at BufferBuilder.build(),
+  // so a key readable here stays readable for this connector's whole life —
+  // and a key unreadable here would otherwise throw inside the kernel's
+  // trace path on every single invoke. Fail now, where the stack names the
+  // wiring site.
+  if (buffer !== undefined) {
+    for (const { label, key } of watchBuffers) {
+      try {
+        buffer.getSnapshot(key);
+      } catch (error) {
+        throw new Error(
+          `connectDevtoolsBridge: watchBuffers entry '${label}' reads state '${key.id}', which is not allocated on the given buffer — allocate it before build(), or drop the entry.`,
+          { cause: error },
+        );
+      }
+    }
+  }
 
   const queue = new SendQueue();
   // Two separate queues, not one: `catalog` is latest-wins static data (like
   // the server's own single-slot cache), so it gets its own O(1) slot that
   // trimming never touches. `trace` is a genuine stream, so it's the only
   // one subject to `pendingCap`.
-  let pendingCatalog: string | undefined;
+  // `latestCatalog` is latest-wins and persistent (never cleared once set) — the connector's own
+  // "declared at birth" copy of the fact. `catalogFlushedToSocket` tracks whether *this* socket has
+  // already received it, so a (re)connect re-sends it without the app ever calling `sendCatalog`
+  // again. See protocol.ts's byte-identity contract: `latestCatalog` is stringified once in
+  // `send()` below and that same text is resent verbatim on every (re)connect, never re-serialized.
+  let latestCatalog: string | undefined;
+  let catalogFlushedToSocket = false;
   const pendingTrace: string[] = [];
   let socket: WebSocket | undefined;
   let backoffMs = reconnectBaseMs;
@@ -142,9 +170,9 @@ export function connectDevtoolsBridge(options: BridgeConnectorOptions = {}): Bri
     if (socket === undefined || socket.readyState !== WebSocket.OPEN) {
       return;
     }
-    if (pendingCatalog !== undefined) {
-      socket.send(pendingCatalog);
-      pendingCatalog = undefined;
+    if (latestCatalog !== undefined && !catalogFlushedToSocket) {
+      socket.send(latestCatalog);
+      catalogFlushedToSocket = true;
     }
     while (pendingTrace.length > 0) {
       socket.send(pendingTrace.shift() as string);
@@ -174,6 +202,12 @@ export function connectDevtoolsBridge(options: BridgeConnectorOptions = {}): Bri
       return;
     }
     socket = ws;
+    // Reset here, not inside the 'open' handler: the flag's meaning is "has *this* socket received
+    // latestCatalog", so it must start its life alongside the socket itself, at the same statement
+    // that assigns `socket`. Placing it in 'open' instead would risk losing a resend if some future
+    // flush path fires before 'open' — no behavior difference under today's event ordering, but this
+    // is the ordering-independent spot.
+    catalogFlushedToSocket = false;
     ws.addEventListener('open', () => {
       backoffMs = reconnectBaseMs;
       flush();
@@ -192,10 +226,14 @@ export function connectDevtoolsBridge(options: BridgeConnectorOptions = {}): Bri
   function send(message: BridgeMessage): void {
     queue.enqueue(() => {
       if (message.type === 'catalog') {
-        // Overwrite, don't queue: only the newest catalog is ever
-        // meaningful, mirroring the bridge server's own "cache just the
-        // last one seen" replay semantics.
-        pendingCatalog = JSON.stringify(message);
+        // Overwrite, don't queue: only the newest catalog is ever meaningful, mirroring the bridge
+        // server's own "cache just the last one seen" replay semantics. Stringified exactly once,
+        // here — every resend (this connect's flush, and every future reconnect's) reuses this
+        // same text rather than re-serializing `message`, per protocol.ts's byte-identity contract.
+        latestCatalog = JSON.stringify(message);
+        // A new catalog supersedes whatever the current socket already has, so it must go out
+        // again even if this socket already flushed a previous one.
+        catalogFlushedToSocket = false;
       } else {
         pendingTrace.push(JSON.stringify(message));
         // Same batch-trim policy as `appendTraceEntry` (`src/trace.ts`): pay
@@ -209,12 +247,17 @@ export function connectDevtoolsBridge(options: BridgeConnectorOptions = {}): Bri
     });
   }
 
-  const onTrace: TraceSink = (symbolId, verb, span, payload, timestamp) => {
+  const onTrace: TraceSink = (symbolId, verb, span, payload, timestamp, desc) => {
     const bufferSnapshot =
       watchBuffers.length > 0 && buffer !== undefined
         ? watchBuffers.map(({ label, key }) => ({ label, value: describeCellValue(buffer.getSnapshot(key)) }))
         : undefined;
-    send({ type: 'trace', entry: { symbolId, verb, span, payload, timestamp, bufferSnapshot } });
+    // Conditional spread, not a bound `desc` property: an entry must never carry `desc: undefined`
+    // as an actual key (mirrors kernelee's own `TraceEntry.desc` contract — "never present with an
+    // undefined value", see `protocol.ts`'s `BridgeTraceEntry.desc` doc comment) — a reader that
+    // only checks `'desc' in entry` must see the same "absent" story a sink written before this
+    // sixth argument existed already produces.
+    send({ type: 'trace', entry: { symbolId, verb, span, payload, timestamp, bufferSnapshot, ...(desc !== undefined ? { desc } : {}) } });
   };
 
   return {

@@ -97,6 +97,17 @@ export const symbolGate = style({
   fontStyle: 'italic',
 });
 
+/** `.desc` — a trace row's own `TraceEntry.desc` (`abort(value, desc)` / `fail(error, desc)`),
+ *  shown inline next to the verb pill when present. Muted, same register as `.ts` below, since
+ *  this is supplementary context, not the row's primary identity. */
+export const desc = style({
+  color: '#57606a',
+  fontSize: '0.75rem',
+  fontStyle: 'italic',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+});
+
 export const ts = style({
   color: '#8c959f',
   fontSize: '0.75rem',

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BridgeMessage, CardSize, EditorDef, IndexJoin, PanelConfig, StageDescriptor, TabId, WiringEndpoint, WiringGraphDocument, WiringGuardEntry } from '../types.js';
+import type { CardSize, EditorDef, IndexJoin, PanelConfig, StageDescriptor, TabId, WireWiringGraphDocument, WiringEndpoint, WiringGraphDocument, WiringGuardEntry } from '../types.js';
+import { parseBridgeMessage } from '../lib/bridgeMessage.js';
 import { BUILTIN_EDITORS, EDITOR_STORAGE_KEY, editorUrl as buildEditorUrl, mergeEditors, pickInitialEditorId } from '../lib/editors.js';
 import { buildIndexJoin, emptyIndexJoin } from '../lib/indexJoin.js';
 import { DEFAULT_PART_COLORS, unanchoredGuards as computeUnanchoredGuards, type SelectedGate } from '../lib/graph.js';
@@ -30,7 +31,10 @@ const EMPTY_DOC: WiringGraphDocument = {
 
 export function App() {
   // MARK: - Wiring-graph / catalog state
-  const [currentDoc, setCurrentDoc] = useState<WiringGraphDocument>(EMPTY_DOC);
+  // Typed `WireWiringGraphDocument` (schemaVersion widened to `number`), not `WiringGraphDocument`
+  // — a live catalog arrives through `parseBridgeMessage`, which accepts any `schemaVersion >= 6`
+  // (additive kernelee bumps included), not just the literal `6` kernelee's own type declares.
+  const [currentDoc, setCurrentDoc] = useState<WireWiringGraphDocument>(EMPTY_DOC);
   const [usingSample, setUsingSample] = useState(true);
   const [selectedEndpointKey, setSelectedEndpointKey] = useState<string | null>(null);
   const [selectedStage, setSelectedStage] = useState<StageDescriptor | null>(null);
@@ -83,7 +87,7 @@ export function App() {
   );
 
   // MARK: - Catalog application
-  const applyCatalog = useCallback((doc: WiringGraphDocument, sample: boolean) => {
+  const applyCatalog = useCallback((doc: WireWiringGraphDocument, sample: boolean) => {
     setCurrentDoc(doc);
     setUsingSample(sample);
     setSelectedStage(null);
@@ -162,6 +166,14 @@ export function App() {
   );
 
   // MARK: - Boot + WS lifecycle
+  // Raw text of the last WS-sourced catalog applied — never touched by the sample-catalog boot
+  // path, only by the WS message handler below. See src/protocol.ts's byte-identity contract: an
+  // unchanged catalog always arrives as the exact same bytes, so a resend (e.g. after the bridge
+  // server or the kernel app's connector reconnects) can be recognized by plain string equality and
+  // skipped as a no-op — preserving selection state (selectedEndpointKey / selectedStage / ...)
+  // instead of resetting it on every reconnect.
+  const lastWsCatalogTextRef = useRef<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     let ws: WebSocket | undefined;
@@ -180,8 +192,18 @@ export function App() {
       });
       ws.addEventListener('message', (event) => {
         if (cancelled) return;
-        const message = JSON.parse(event.data as string) as BridgeMessage;
+        // `parseBridgeMessage` returns `null` for anything that fails to parse as JSON or fails
+        // the wire-contract envelope check — silently ignored (no console noise), same as any
+        // other frame the panel isn't the intended reader of. See `lib/bridgeMessage.ts`.
+        const message = parseBridgeMessage(event.data as string);
+        if (!message) return;
         if (message.type === 'catalog') {
+          // Same-bytes resend (e.g. the kernel app's connector re-sending its latest catalog on
+          // every reconnect, or this panel's own reconnect replaying the server's cache) → no-op,
+          // preserving selection state. A genuinely different catalog still resets it below, via
+          // applyCatalog. See the byte-identity contract this depends on (src/protocol.ts).
+          if (event.data === lastWsCatalogTextRef.current) return;
+          lastWsCatalogTextRef.current = event.data as string;
           applyCatalog(message.doc, false);
         } else if (message.type === 'trace') {
           trace.pushTraceEntry(message.entry);
@@ -230,6 +252,11 @@ export function App() {
       }
 
       try {
+        // Deliberately no envelope validation here, unlike the WS path above: this reads a file
+        // this package itself bundles and commits (`public/sample-catalog.json`), not untrusted
+        // wire input — if it's malformed, the bug is the file, and validating it at read time
+        // would just be the receiver rescuing a build-time defect. The new top-level
+        // `ErrorBoundary` is the backstop if it ever is.
         const res = await fetch('/sample-catalog.json');
         const sample = (await res.json()) as WiringGraphDocument;
         if (!cancelled) applyCatalog(sample, true);
@@ -302,11 +329,15 @@ export function App() {
               selectedGate={selectedGate}
               partColors={partColors}
               partKindByHandler={indexJoin.kinds}
+              verbEmissionsByNodeId={indexJoin.verbEmissions}
+              indexGateById={indexJoin.gates}
               guardEntry={currentEndpoint ? (guardsByTarget.get(currentEndpoint.key) ?? null) : null}
               unanchoredGuards={unanchoredGuardEntries}
+              endpointKeys={endpointKeys}
               onSelectStage={onSelectStage}
               onSelectEntry={onSelectEntry}
               onSelectGate={onSelectGate}
+              onJumpToEndpoint={(key) => selectEndpoint(key, { viaJump: true })}
             />
           </div>
           <Resizer variant="inspector" dragging={layout.inspectorDragging} onPointerDown={layout.onInspectorResizerPointerDown} />
@@ -326,6 +357,7 @@ export function App() {
             indexEndpointByKey={indexJoin.endpoints}
             indexSymbolById={indexJoin.symbols}
             indexGateById={indexJoin.gates}
+            verbEmissionsByNodeId={indexJoin.verbEmissions}
             handlerSiteByName={indexJoin.sites}
             wireSiteByPath={indexJoin.wireSites}
             editorUrl={editorUrl}

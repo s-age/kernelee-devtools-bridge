@@ -17,12 +17,27 @@ export interface BridgeTraceEntry {
   readonly payload?: string;
   readonly timestamp: number;
   readonly bufferSnapshot?: readonly { readonly label: string; readonly value: string }[];
+  /** The resolved verb's own `desc` (`abort(value, desc)` / `fail(error, desc)`) — mirrors
+   *  kernelee's `TraceSink`'s sixth argument / `TraceEntry.desc`. Additive and optional: absent
+   *  whenever the resolved verb had no `desc`. */
+  readonly desc?: string;
 }
 
 /** Mirrors `src/protocol.ts`'s `BridgeMessage`. */
 export type BridgeMessage =
   | { readonly type: 'trace'; readonly entry: BridgeTraceEntry }
   | { readonly type: 'catalog'; readonly doc: WiringGraphDocument };
+
+/** Mirrors `src/protocol.ts`'s `WireWiringGraphDocument` — same v6 envelope, `schemaVersion`
+ *  widened to `number` so an additive kernelee bump (v7, ...) still passes `parseBridgeMessage`. */
+export type WireWiringGraphDocument =
+  Omit<WiringGraphDocument, 'schemaVersion'> & { readonly schemaVersion: number };
+
+/** Mirrors `src/protocol.ts`'s `WireBridgeMessage` — the envelope `parseBridgeMessage`
+ *  (`lib/bridgeMessage.ts`) narrows a raw WS frame to. */
+export type WireBridgeMessage =
+  | { readonly type: 'trace'; readonly entry: BridgeTraceEntry }
+  | { readonly type: 'catalog'; readonly doc: WireWiringGraphDocument };
 
 /** One editor entry — either a built-in or a `/panel-config.json`-supplied override/addition. */
 export interface EditorDef {
@@ -56,6 +71,19 @@ export interface IndexHandler {
   readonly site?: string;
 }
 
+/** One `StageEntry.verbEmissions` / `GateEntry.verbEmissions` entry (kernel-introspect index
+ *  schema v14): a `verb: 'abort' | 'fail'` reachable from this stage/gate, its `desc` condition
+ *  string (`null` when the site called `abort(value)`/`fail(error)` with no desc argument — a
+ *  real fact, distinct from "not scanned"), and the call `site` ("file:line"). Read only as wide
+ *  as the panel actually uses; `verb` is kept `string` rather than a `'abort' | 'fail'` literal
+ *  union for the same forward-compat reason `TraceVerbKind` is read broadly elsewhere in this
+ *  file — a future verb kind must still degrade, not crash the join. */
+export interface IndexVerbEmission {
+  readonly verb: string;
+  readonly desc: string | null;
+  readonly site: string;
+}
+
 export interface IndexStage {
   readonly wireSite?: string;
   readonly handler?: IndexHandler;
@@ -64,6 +92,9 @@ export interface IndexStage {
    * (schemaVersion 5). A walk over `branches` must also cover this, or the
    * detached subtree's wire sites / handlers silently vanish from the join. */
   readonly untrackedBranches?: readonly (readonly IndexStage[])[];
+  /** `null` = scanned by a pre-v14 index ("not scanned"); absent degrades the same way. Both
+   *  collapse to "no verb chips for this stage" in `buildIndexJoin`. */
+  readonly verbEmissions?: readonly IndexVerbEmission[] | null;
 }
 
 export interface IndexDriveSite {
@@ -95,6 +126,9 @@ export interface IndexGate {
   readonly id: string;
   readonly declarationSite?: string;
   readonly handler?: IndexHandler | null;
+  /** Same shape/degrade contract as `IndexStage.verbEmissions` — a gate's own reachable
+   *  `abort`/`fail` verbs (schema v14). */
+  readonly verbEmissions?: readonly IndexVerbEmission[] | null;
 }
 
 export interface IndexDoc {
@@ -121,6 +155,11 @@ export interface IndexJoin {
   readonly symbols: ReadonlyMap<string, IndexSymbol>;
   /** gateId -> the index's gates[] entry (declarationSite / named handler source links). */
   readonly gates: ReadonlyMap<string, IndexGate>;
+  /** canvas node id (same grammar `wireSites` joins on) -> that stage's `verbEmissions` list —
+   *  the abort/fail-chip data join. Only non-empty lists are keyed (a stage with none is simply
+   *  absent, not present with `[]`). A gate's own `verbEmissions` travels on its `IndexGate` entry
+   *  in `gates` above instead — no separate map needed there. */
+  readonly verbEmissions: ReadonlyMap<string, readonly IndexVerbEmission[]>;
 }
 
 /** The shape `/panel-config.json` may hand the panel — every field optional/best-effort, same

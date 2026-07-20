@@ -57,6 +57,20 @@ export function GateInspector({ gate, index, total, indexGate, editorUrl, editor
       <p className={styles.dd}>pre-handler gate — verdict: next → allow / non-next (divert · fail · abort) → veto.</p>
       <h3 className={styles.h3}>Re-entrancy</h3>
       <p className={styles.dd}>re-entry within one causal flow skips the gate (no trace entry).</p>
+      {indexGate?.verbEmissions && indexGate.verbEmissions.length > 0 && (
+        <>
+          <h3 className={styles.h3}>verb emissions</h3>
+          {indexGate.verbEmissions.map((emission, i) => (
+            <dl className={styles.dl} key={i}>
+              <dt className={styles.dt}>verb</dt>
+              <dd className={styles.dd}>{emission.verb}</dd>
+              <dt className={styles.dt}>desc</dt>
+              <dd className={emission.desc === null ? styles.descTodo : styles.dd}>{emission.desc ?? 'TODO'}</dd>
+              <SiteRow term="site" site={emission.site} url={editorUrl(emission.site)} editorLabel={editorLabel} />
+            </dl>
+          ))}
+        </>
+      )}
     </>
   );
 }

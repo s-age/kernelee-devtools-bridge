@@ -12,6 +12,14 @@ trace timeline (span parent/child relationships, live Buffer state) in a browser
 
 Never include it in production builds (start it dev-server-style during development only).
 
+## Requirements
+
+`@s-age/kernelee` >= 0.4.0 (the first release whose `WiringGraphDocument.schemaVersion` is 6 —
+the version this bridge's WS server requires to accept and cache a `catalog` message; see
+`docs/bridge-drops-nonconforming-messages.md`). The server drops (never caches, persists, or
+relays) any WS message that fails this envelope check, logging why via `console.warn` — it is a
+validator of the wire contract, not a rescuer of malformed or out-of-range messages.
+
 ## How it differs from Redux DevTools
 
 Redux DevTools is implemented as a Chrome(-based browser) extension, so it only works in
@@ -111,8 +119,13 @@ can be ignored in the normal development flow.
 ## How catalog and trace relate
 
 - `catalog` (`WiringGraphDocument` — built with `describePipe`/`projectWiringGraph`, part of
-  `kernelee`'s own API) only needs to be sent once, right after startup. The server caches just
-  the last one received and replays it to panels that connect later (browser tabs opened late).
+  `kernelee`'s own API) only needs to be sent once, right after startup — the connector keeps it as
+  its `latestCatalog` and re-sends the same text on every (re)connect, so a bridge server restart
+  (or any other reconnect) never leaves a newly-opened panel without a graph. The server also caches
+  just the last one received and replays it to panels that connect later (browser tabs opened late).
+  An unchanged catalog arrives as the exact same bytes on every path (resend, replay, relay) — see
+  `src/protocol.ts`'s byte-identity contract; the panel relies on this to dedupe same-content
+  resends and keep selection state instead of resetting it.
 - `trace` (via `onTrace`, per invocation) is neither cached nor replayed — a panel that connects
   late cannot see earlier traces (live streaming only).
 
@@ -124,8 +137,8 @@ can be ignored in the normal development flow.
 |---|---|---|
 | `url` | `ws://localhost:7331/ws` | Where to connect |
 | `onError` | `console.error` | Called on every connection failure / socket error |
-| `pendingCap` | `300` | Cap on the queue of unsent `trace` messages (`catalog` is exempt — always just the latest one) |
-| `buffer` / `watchBuffers` | — | Embed snapshots of `Buffer` cells into trace entries |
+| `pendingCap` | `300` | Cap on the queue of unsent `trace` messages (`catalog` is exempt — the connector always keeps just the latest one and re-sends it on every reconnect) |
+| `buffer` / `watchBuffers` | — | Embed snapshots of `Buffer` cells into trace entries. Watched keys are validated at construction — an entry whose state is not allocated on `buffer` makes `connectDevtoolsBridge` throw immediately (the Buffer's cell set is frozen at `build()`, so a key unreadable at construction can never become readable later). |
 
 `startBridgeServer(options)`:
 
@@ -147,7 +160,7 @@ buffer caps retention on both the client and the server side.
 ## CLI
 
 ```sh
-kernelee-devtools-bridge [--port 7331] [--trace-cap 300]
+kernelee-devtools-bridge [--port 7331] [--trace-cap 300] [--trace-out <path>] [--repo-root <path>]
 ```
 
 `npm run devtools` invokes this CLI as-is. For apps that don't use a bundler / run remotely and
@@ -161,6 +174,29 @@ and binary buffers summarized up front), so a larger cap adds ~N×1KB of retaine
 path cost. Default 300; lower it (e.g. `--trace-cap 5`) for a near-zero footprint. It does **not**
 touch the app's own in-process kernel ring (`KernelBuildOptions.traceCap`) or the connector's
 offline send-backlog cap (`pendingCap`) — those are deliberately independent knobs.
+
+`--trace-out <path>` overrides where the persisted trace file lands. When omitted, it defaults to
+`<repoRoot>/node_modules/.cache/kernelee-devtools-bridge/trace.json`, where `repoRoot` is
+`--repo-root` if given, else `cwd`. This default is **repo-local and per-project on purpose**: it
+used to be a single fixed `/tmp/kernelee-trace.json` shared by every bridge on the machine, which
+meant two projects' CLIs running at once (the common case for anyone with two kernelee repos open)
+clobbered each other's entire trace ring on every flush, a sticky-bit `/tmp` turned cross-user
+`rename` into a silently-swallowed EPERM, and a predictable shared tmp name was a symlink-follow
+hazard. `node_modules/.cache` is gitignored and watcher-excluded everywhere already, and its
+lifecycle matches the data's own (born with a checkout, gone with `rm -rf node_modules`).
+
+This default is deliberately reused by kernelee-lifegame's `arch_monitor` launcher, which imports
+the same derivation rule from this package's `"./trace-path"` subpath export
+(`defaultTraceOutPath(repoRoot)`) rather than hardcoding the path a second time. The one thing that
+import does **not** unify is `repoRoot` itself — the CLI derives it from `--repo-root ?? cwd`,
+while the launcher derives it from its own script's location — so the two only land on the same
+path when the CLI is run from the consumer repo's root (`npm run devtools`, the normal case). If
+you invoke the CLI directly from a different `cwd`, pass `--repo-root <repo>` to match; otherwise
+the CLI writes into the wrong repo's cache and `arch_monitor` reads a stale-or-missing file (a
+visible failure — file absence — rather than a silent takeover by another project's session).
+
+Any leftover `/tmp/kernelee-trace.json` from a previous version of this package is inert rolling
+data and safe to delete manually.
 
 ## License
 

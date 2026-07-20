@@ -1,4 +1,5 @@
-import { rename, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import type { TraceEntry, TraceStateValue } from '@s-age/kernelee';
 import type { BridgeTraceEntry } from './protocol.js';
 
@@ -48,9 +49,10 @@ export interface TracePersistence {
    */
   record(entry: BridgeTraceEntry): void;
   /**
-   * Cancel any pending throttle timer and write the ring's current state out immediately —
-   * called once, on server shutdown, so the last burst before a close isn't lost to the trailing
-   * timer never getting to fire.
+   * Cancel any pending throttle timer, wait out any flush already in flight, then write the
+   * ring's current state out once more if it changed since that flush's snapshot — called once,
+   * on server shutdown, so the last burst before a close isn't lost to the trailing timer never
+   * getting to fire, nor to a follow-up flush the cleared timer would have driven.
    */
   close(): Promise<void>;
 }
@@ -79,6 +81,20 @@ export function createTracePersistence(options: TracePersistenceOptions): TraceP
   // True whenever the in-memory ring has changed since the last successful (or attempted) write —
   // lets `close()` skip a redundant final flush when the trailing timer already caught up.
   let dirty = false;
+  // The in-flight `flush()` call, or `undefined` when no write is currently running. Serializes
+  // flushes so at most one `writeFile`→`rename` pair is ever in the air at once — without this, a
+  // second burst's timer could fire while the first burst's write was still pending, and the two
+  // calls would race the SAME pid-fixed tmp path (see `flush()`'s doc), leaving the loser's
+  // `rename` to fail with ENOENT once the winner had already moved the tmp file out from under it.
+  let flushing: Promise<void> | undefined;
+  // Set when a flush is requested (via `record()` or the trailing timer) while one is already
+  // running. NOT the same signal as `dirty`: `dirty` also covers the ring's freshness for `close()`'s
+  // own decision, and folding the two together would make an in-flight record trigger an immediate
+  // follow-up flush the instant the current write finishes — collapsing the whole point of the
+  // 200ms coalesce window — while ALSO leaving a stale timer to fire later and write an unchanged
+  // ring for nothing. Kept as its own boolean so "a flush is owed" and "the ring changed" can be
+  // tracked and cleared independently.
+  let pending = false;
 
   /**
    * Write the ring to a sibling temp file, then `rename` it onto `path` — `rename` on the same
@@ -92,6 +108,13 @@ export function createTracePersistence(options: TracePersistenceOptions): TraceP
     const value: TraceStateValue = { entries };
     const tmpPath = `${path}.tmp-${process.pid}`;
     try {
+      // Deliberately re-run on every flush rather than latched to "once": the default `path` now
+      // lives under `node_modules/.cache` (see `tracePath.ts`), and `rm -rf node_modules` mid-session
+      // followed by a reinstall would otherwise leave every subsequent flush dead with no self-repair.
+      // The recursive mkdir is a cheap syscall against an already-existing directory (EEXIST handled
+      // internally by Node), and flushes here are already throttled to at most one per
+      // `DEFAULT_FLUSH_DELAY_MS` burst — there is no hot path left to save by latching this.
+      await mkdir(dirname(path), { recursive: true });
       await writeFile(tmpPath, JSON.stringify(value), 'utf8');
       await rename(tmpPath, path);
     } catch (error) {
@@ -99,13 +122,37 @@ export function createTracePersistence(options: TracePersistenceOptions): TraceP
     }
   }
 
-  function scheduleFlush(): void {
+  /**
+   * Run `flush()` at most once at a time, queueing exactly one follow-up if a request comes in
+   * while a write is already in flight. This is the serialization point every trigger (the
+   * throttle timer today, `close()` below) must funnel through instead of calling `flush()`
+   * directly — calling `flush()` straight from two places is exactly how the pid-fixed tmp path
+   * collision happens.
+   */
+  function drain(): void {
+    if (flushing) {
+      // A write is already running — don't start a second one. Just mark that the ring has moved
+      // on since that write's snapshot was taken, so its `finally` below knows to run one more
+      // round once it settles.
+      pending = true;
+      return;
+    }
+    flushing = flush().finally(() => {
+      flushing = undefined;
+      if (pending) {
+        pending = false;
+        drain();
+      }
+    });
+  }
+
+  function requestFlush(): void {
     if (timer !== undefined) {
       return;
     }
     timer = setTimeout(() => {
       timer = undefined;
-      void flush();
+      drain();
     }, flushDelayMs);
     // Don't hold the process open just for this timer — a bridge sitting idle between trace
     // bursts should never be the reason `close()`'s own http/wss teardown looks like it hung.
@@ -121,12 +168,24 @@ export function createTracePersistence(options: TracePersistenceOptions): TraceP
         entries = entries.slice(entries.length - cap);
       }
       dirty = true;
-      scheduleFlush();
+      requestFlush();
     },
     async close(): Promise<void> {
       if (timer !== undefined) {
         clearTimeout(timer);
         timer = undefined;
+      }
+      // A trailing timer's job — a follow-up flush queued by `drain()` — is now `close()`'s to
+      // finish instead, since the timer that would have driven it just got cleared above.
+      pending = false;
+      // Loop rather than a single `await`: `flushing`'s `finally` callback runs synchronously
+      // when the promise settles, but THIS function only resumes on the next microtask tick after
+      // that — so if `pending` was true, `drain()` has already started a NEW `flushing` by the
+      // time we wake up. A single `await flushing` would resolve against the stale promise and
+      // return while that new flush is still running, dropping whatever record arrived last.
+      // Looping re-reads `flushing` each time and keeps waiting until it's truly `undefined`.
+      while (flushing) {
+        await flushing;
       }
       if (dirty) {
         await flush();

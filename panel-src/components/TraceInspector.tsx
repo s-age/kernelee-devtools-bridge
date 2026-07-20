@@ -31,6 +31,12 @@ export function TraceInspector({ entry, isGate }: TraceInspectorProps) {
             <dd className={styles.dd}>{entry.symbolId}</dd>
             <dt className={styles.dt}>verb</dt>
             <dd className={styles.dd}>{entry.verb}</dd>
+            {entry.desc !== undefined && (
+              <>
+                <dt className={styles.dt}>desc</dt>
+                <dd className={styles.dd}>{entry.desc}</dd>
+              </>
+            )}
             <dt className={styles.dt}>span</dt>
             <dd className={styles.dd}>{entry.span.id}</dd>
             {entry.span.parentId !== undefined && (

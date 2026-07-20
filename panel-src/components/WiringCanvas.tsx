@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
-import type { StageDescriptor, WiringEndpoint, WiringGuardEntry } from '../types.js';
-import { DEFAULT_PART_COLORS, buildEndpointTree, emptyTree, type BuildTreeCtx, type SelectedGate } from '../lib/graph.js';
+import type { IndexGate, IndexVerbEmission, StageDescriptor, WiringEndpoint, WiringGuardEntry } from '../types.js';
+import { DEFAULT_PART_COLORS, buildEndpointTree, canvasOptionsFor, emptyTree, type BuildTreeCtx, type SelectedGate } from '../lib/graph.js';
 import * as styles from '../styles/WiringCanvas.css.js';
 
 export interface WiringCanvasProps {
@@ -13,15 +13,30 @@ export interface WiringCanvasProps {
   readonly selectedGate: SelectedGate | null;
   readonly partColors: Readonly<Record<string, string>>;
   readonly partKindByHandler: ReadonlyMap<string, string>;
+  /** canvas node id -> that stage's `verbEmissions` (`IndexJoin.verbEmissions`) — threaded into
+   *  `BuildTreeCtx` so `buildChain` can attach abort/fail chips (see `lib/graph.ts`'s
+   *  `buildVerbChips`). */
+  readonly verbEmissionsByNodeId: ReadonlyMap<string, readonly IndexVerbEmission[]>;
+  /** gateId -> the index's gates[] entry (`IndexJoin.gates`) — the same map `InspectorPanel`
+   *  already threads for source links, ALSO needed here for a gate's own `verbEmissions`
+   *  (`buildGateNode` reads `.verbEmissions` off the entry). */
+  readonly indexGateById: ReadonlyMap<string, IndexGate>;
   /** The selected endpoint's own guard entry (`guards[].targetId === endpoint.key`), or `null` when
    *  no `guard()` call ever named it — looked up by the caller (`App.tsx`'s `guardsByTarget`). */
   readonly guardEntry: WiringGuardEntry | null;
   /** `guards[].targetId` entries matching no catalogued endpoint — never dropped, rendered as the
    *  always-visible "unanchored" overlay regardless of which endpoint is selected. */
   readonly unanchoredGuards: readonly WiringGuardEntry[];
+  /** The catalog's own endpoint key set — threaded into `BuildTreeCtx` so `buildChain` can bake
+   *  each divert reference node's `resolved` flag in at build time (see `lib/graph.ts`'s
+   *  `buildDivertNodes`). */
+  readonly endpointKeys: ReadonlySet<string>;
   readonly onSelectStage: (stage: StageDescriptor, path: string) => void;
   readonly onSelectEntry: (endpoint: WiringEndpoint) => void;
   readonly onSelectGate: (gate: SelectedGate) => void;
+  /** Jump to a divert target's own endpoint — same navigation path `StageInspector`'s resolved
+   *  `divertsTo` chips already use (`App.tsx`'s `selectEndpoint(key, { viaJump: true })`). */
+  readonly onJumpToEndpoint: (key: string) => void;
 }
 
 interface StructuralKey {
@@ -61,36 +76,53 @@ export function WiringCanvas({
   selectedGate,
   partColors,
   partKindByHandler,
+  verbEmissionsByNodeId,
+  indexGateById,
   guardEntry,
   unanchoredGuards,
+  endpointKeys,
   onSelectStage,
   onSelectEntry,
   onSelectGate,
+  onJumpToEndpoint,
 }: WiringCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const graphRef = useRef<RelaphRelationGraph | null>(null);
-  const actionsRef = useRef({ onSelectStage, onSelectEntry, onSelectGate });
+  const actionsRef = useRef({ onSelectStage, onSelectEntry, onSelectGate, onJumpToEndpoint });
   const prevStructuralRef = useRef<StructuralKey | undefined>(undefined);
 
   useEffect(() => {
-    actionsRef.current = { onSelectStage, onSelectEntry, onSelectGate };
+    actionsRef.current = { onSelectStage, onSelectEntry, onSelectGate, onJumpToEndpoint };
   });
 
-  // Create the graph once. `onNodeClick` is registered here and never re-registered, so it must
-  // dispatch through `actionsRef` (kept fresh by the effect above) rather than closing over
-  // whatever `onSelectStage`/`onSelectEntry`/`onSelectGate` happened to be at mount time.
+  // Create the graph once per mode (cardSize changes recreate it). relaph's own options
+  // (`margin`/`connector.labelMaxWidth`) are constructor-only, so a mode switch cannot just
+  // `setData` on the existing instance — it must destroy and rebuild via `canvasOptionsFor`. Reset
+  // `prevStructuralRef` on every (re)creation so the very first `setData` after a rebuild always
+  // runs the unconditional (fit-triggering) branch below, never the pan/zoom-preserving one.
+  // `onNodeClick` is registered here and never re-registered per instance, so it must dispatch
+  // through `actionsRef` (kept fresh by the effect above) rather than closing over whatever
+  // `onSelectStage`/`onSelectEntry`/`onSelectGate` happened to be at creation time.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const graph = new window.Relaph.RelationGraph(canvas, {
-      margin: { node: 24, rank: 56 },
+      ...canvasOptionsFor(cardSize),
       minScale: 0.5,
       maxScale: 2,
       labelOverflow: 'truncate',
       labelPadding: { x: 12, y: 10 },
       onNodeClick: (node) => {
         const data = node.data as
-          | { kind?: string; stage?: StageDescriptor; endpoint?: WiringEndpoint; targetId?: string; gateId?: string }
+          | {
+              kind?: string;
+              stage?: StageDescriptor;
+              endpoint?: WiringEndpoint;
+              targetId?: string;
+              gateId?: string;
+              key?: string;
+              resolved?: boolean;
+            }
           | undefined;
         if (data?.kind === 'stage' && data.stage) {
           actionsRef.current.onSelectStage(data.stage, node.id);
@@ -98,16 +130,21 @@ export function WiringCanvas({
           actionsRef.current.onSelectEntry(data.endpoint);
         } else if (data?.kind === 'gate' && data.targetId && data.gateId) {
           actionsRef.current.onSelectGate({ targetId: data.targetId, gateId: data.gateId });
+        } else if (data?.kind === 'divertTarget' && data.resolved === true && data.key) {
+          // Unresolved (no matching endpoint) stays visible but non-jumpable — same "report,
+          // don't hide" stance as the unanchored-guards overlay below.
+          actionsRef.current.onJumpToEndpoint(data.key);
         }
       },
     });
     graphRef.current = graph;
+    prevStructuralRef.current = undefined;
     return () => {
       graph.destroy();
       graphRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cardSize]);
 
   useEffect(() => {
     const graph = graphRef.current;
@@ -123,6 +160,9 @@ export function WiringCanvas({
       selectedGate,
       partColors,
       partKindByHandler,
+      endpointKeys,
+      verbEmissionsByNodeId,
+      indexGateById,
     };
     const { root: tree, joinEdges } = endpoint
       ? buildEndpointTree(endpoint, ctx, guardEntry)
@@ -136,7 +176,21 @@ export function WiringCanvas({
       graph.viewport.setTranslate(tx, ty);
     }
     prevStructuralRef.current = structural;
-  }, [endpoint, mainLineOnly, collapsed, cardSize, selectedStage, selectedEntryEndpoint, selectedGate, partColors, partKindByHandler, guardEntry]);
+  }, [
+    endpoint,
+    mainLineOnly,
+    collapsed,
+    cardSize,
+    selectedStage,
+    selectedEntryEndpoint,
+    selectedGate,
+    partColors,
+    partKindByHandler,
+    verbEmissionsByNodeId,
+    indexGateById,
+    guardEntry,
+    endpointKeys,
+  ]);
 
   const gateColor = partColors.gate ?? DEFAULT_PART_COLORS.gate;
 

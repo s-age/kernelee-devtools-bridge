@@ -2,10 +2,15 @@
 // single IIFE (react/react-dom included), served alongside the vendored relaph build.
 import { createRoot } from 'react-dom/client';
 import { App } from './components/App.js';
+import { ErrorBoundary } from './components/ErrorBoundary.js';
 import './styles/global.css.js';
 
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('kernelee-devtools-bridge: #root not found in index.html');
 }
-createRoot(container).render(<App />);
+createRoot(container).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
+);

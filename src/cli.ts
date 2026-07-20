@@ -2,15 +2,22 @@
 import { resolve as resolvePath } from 'node:path';
 import { DEFAULT_PORT, startBridgeServer } from './server.js';
 import { DEFAULT_TRACE_CAP } from './tracePersistence.js';
+import { defaultTraceOutPath } from './tracePath.js';
 
 /**
- * Where the live trace ring lands when `--trace-out` isn't given. Defaulted here rather than in
- * `startBridgeServer` itself (contrast `DEFAULT_PORT`, which the server also falls back to): the
- * CLI is the "just works" entry point kernel apps actually run, so *it* is what makes persistence
- * on-by-default, while `BridgeServerOptions.traceOutPath` stays genuinely opt-in for any other
- * embedder of this server (see that field's own doc in `server.ts`).
+ * Whether the live trace ring is persisted by default when `--trace-out` isn't given is a
+ * decision made HERE, not in `startBridgeServer` (contrast `DEFAULT_PORT`, which the server also
+ * falls back to): the CLI is the "just works" entry point kernel apps actually run, so *it* is
+ * what makes persistence on-by-default, while `BridgeServerOptions.traceOutPath` stays genuinely
+ * opt-in for any other embedder of this server (see that field's own doc in `server.ts`).
+ *
+ * WHERE it lands is a separate question, answered by the shared derivation rule in `tracePath.ts`:
+ * `defaultTraceOutPath(repoRoot)`. That module is intentionally its own file (not folded in here
+ * or into `tracePersistence.ts`) so `arch_monitor`'s reader-side launcher (kernelee-lifegame's
+ * `scripts/introspect-mcp-server.mjs`) can `import` the SAME rule from the dependency-zero
+ * `"./trace-path"` subpath and land on the identical path without either side hardcoding a string
+ * the other has to keep in sync by hand.
  */
-const DEFAULT_TRACE_OUT_PATH = '/tmp/kernelee-trace.json';
 
 function parsePort(argv: readonly string[]): number {
   const flagIndex = argv.indexOf('--port');
@@ -53,16 +60,19 @@ function parseTraceCap(argv: readonly string[]): number {
 }
 
 const argv = process.argv.slice(2);
+// The CLI is run from the consumer repo (`npm run devtools`), so cwd IS the repo the index's
+// repo-relative "file:line" pins resolve against — `--repo-root` exists for the odd launch that
+// isn't. Hoisted (rather than inlined below) because it also seeds the default trace-out path:
+// moving `--repo-root` moves the trace along with it, which is semantically right (a trace is a
+// fact about *that project's* session).
+const repoRoot = resolvePath(parsePathFlag(argv, '--repo-root') ?? process.cwd());
 const server = await startBridgeServer({
   port: parsePort(argv),
   introspectIndexPath: parsePathFlag(argv, '--index'),
   panelConfigPath: parsePathFlag(argv, '--panel-config'),
-  // The CLI is run from the consumer repo (`npm run devtools`), so cwd IS the
-  // repo the index's repo-relative "file:line" pins resolve against —
-  // `--repo-root` exists for the odd launch that isn't.
-  repoRoot: resolvePath(parsePathFlag(argv, '--repo-root') ?? process.cwd()),
-  // On by default (see DEFAULT_TRACE_OUT_PATH) — `--trace-out` only overrides where it lands.
-  traceOutPath: parsePathFlag(argv, '--trace-out') ?? DEFAULT_TRACE_OUT_PATH,
+  repoRoot,
+  // On by default (see the doc comment above) — `--trace-out` only overrides where it lands.
+  traceOutPath: parsePathFlag(argv, '--trace-out') ?? defaultTraceOutPath(repoRoot),
   traceCap: parseTraceCap(argv),
 });
 console.log(`kernelee-devtools-bridge listening on http://localhost:${server.port} (ws path: /ws)`);

@@ -1,4 +1,4 @@
-import type { IndexSymbol, StageDescriptor } from '../types.js';
+import type { IndexSymbol, IndexVerbEmission, StageDescriptor } from '../types.js';
 import { SiteRow } from './SiteRow.js';
 import * as styles from '../styles/InspectorBody.css.js';
 
@@ -6,6 +6,11 @@ export interface StageInspectorProps {
   readonly stage: StageDescriptor;
   readonly selectedStagePath: string | null;
   readonly indexSymbolById: ReadonlyMap<string, IndexSymbol>;
+  /** canvas node id -> that stage's `verbEmissions` — looked up by `selectedStagePath` (the SAME
+   *  node id `wireSiteByPath` already joins on), the desc-in-full home for this stage's own
+   *  abort/fail chips (the canvas edge label is the same text, but relaph's `labelMaxWidth` may
+   *  visually truncate it there — this list never does). */
+  readonly verbEmissionsByNodeId: ReadonlyMap<string, readonly IndexVerbEmission[]>;
   readonly handlerSiteByName: ReadonlyMap<string, string>;
   readonly wireSiteByPath: ReadonlyMap<string, string>;
   readonly editorUrl: (site: string) => string | null;
@@ -22,6 +27,7 @@ export function StageInspector({
   stage,
   selectedStagePath,
   indexSymbolById,
+  verbEmissionsByNodeId,
   handlerSiteByName,
   wireSiteByPath,
   editorUrl,
@@ -32,6 +38,7 @@ export function StageInspector({
   const symbolEntry = stage.symbolId ? indexSymbolById.get(stage.symbolId) : undefined;
   const handlerSite = stage.handlerName ? handlerSiteByName.get(stage.handlerName) : undefined;
   const wireSite = selectedStagePath ? wireSiteByPath.get(selectedStagePath) : undefined;
+  const verbEmissions = selectedStagePath ? (verbEmissionsByNodeId.get(selectedStagePath) ?? []) : [];
 
   return (
     <>
@@ -48,15 +55,6 @@ export function StageInspector({
           <>
             <dt className={styles.dt}>note</dt>
             <dd className={styles.dd}>{stage.note}</dd>
-          </>
-        )}
-        {stage.branchArity !== undefined && (
-          <>
-            <dt className={styles.dt}>branchArity</dt>
-            <dd className={styles.dd}>
-              {stage.branchArity.kind}
-              {'count' in stage.branchArity ? ` (${stage.branchArity.count})` : ''}
-            </dd>
           </>
         )}
         {stage.untrackedBranches !== undefined && stage.untrackedBranches.length > 0 && (
@@ -97,6 +95,20 @@ export function StageInspector({
               ),
             )}
           </div>
+        </>
+      )}
+      {verbEmissions.length > 0 && (
+        <>
+          <h3 className={styles.h3}>verb emissions</h3>
+          {verbEmissions.map((emission, i) => (
+            <dl className={styles.dl} key={i}>
+              <dt className={styles.dt}>verb</dt>
+              <dd className={styles.dd}>{emission.verb}</dd>
+              <dt className={styles.dt}>desc</dt>
+              <dd className={emission.desc === null ? styles.descTodo : styles.dd}>{emission.desc ?? 'TODO'}</dd>
+              <SiteRow term="site" site={emission.site} url={editorUrl(emission.site)} editorLabel={editorLabel} />
+            </dl>
+          ))}
         </>
       )}
     </>

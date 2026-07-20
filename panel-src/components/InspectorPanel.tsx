@@ -1,5 +1,15 @@
 import type { CSSProperties, RefObject } from 'react';
-import type { EditorDef, IndexEndpoint, IndexGate, IndexSymbol, InspectorPosition, StageDescriptor, WiringEndpoint, WiringGuardEntry } from '../types.js';
+import type {
+  EditorDef,
+  IndexEndpoint,
+  IndexGate,
+  IndexSymbol,
+  IndexVerbEmission,
+  InspectorPosition,
+  StageDescriptor,
+  WiringEndpoint,
+  WiringGuardEntry,
+} from '../types.js';
 import type { SelectedGate } from '../lib/graph.js';
 import { EndpointInspector } from './EndpointInspector.js';
 import { StageInspector } from './StageInspector.js';
@@ -26,6 +36,10 @@ export interface InspectorPanelProps {
   /** gateId -> the introspect index's gates[] entry (`IndexJoin.gates`) — the gate inspector's
    *  source-link join (declared / handler body), degrading away on a miss like every index join. */
   readonly indexGateById: ReadonlyMap<string, IndexGate>;
+  /** canvas node id -> that stage's `verbEmissions` (`IndexJoin.verbEmissions`) — the stage
+   *  inspector's abort/fail-emissions list (`StageInspector`). A gate's own emissions travel on
+   *  `indexGateById`'s entry instead — no separate lookup needed for `GateInspector`. */
+  readonly verbEmissionsByNodeId: ReadonlyMap<string, readonly IndexVerbEmission[]>;
   readonly handlerSiteByName: ReadonlyMap<string, string>;
   readonly wireSiteByPath: ReadonlyMap<string, string>;
   readonly editorUrl: (site: string) => string | null;
@@ -52,6 +66,7 @@ export function InspectorPanel({
   indexEndpointByKey,
   indexSymbolById,
   indexGateById,
+  verbEmissionsByNodeId,
   handlerSiteByName,
   wireSiteByPath,
   editorUrl,
@@ -111,6 +126,7 @@ export function InspectorPanel({
             stage={selectedStage}
             selectedStagePath={selectedStagePath}
             indexSymbolById={indexSymbolById}
+            verbEmissionsByNodeId={verbEmissionsByNodeId}
             handlerSiteByName={handlerSiteByName}
             wireSiteByPath={wireSiteByPath}
             editorUrl={editorUrl}

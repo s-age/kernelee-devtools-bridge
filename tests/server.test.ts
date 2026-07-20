@@ -1,9 +1,9 @@
 import { request as httpRequest } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { WiringGraphDocument } from '@s-age/kernelee';
+import type { TraceStateValue, WiringGraphDocument } from '@s-age/kernelee';
 import { startBridgeServer, type BridgeServer } from '../src/server.js';
 import type { BridgeMessage } from '../src/protocol.js';
 import { waitForMessage, waitForOpen } from './support.js';
@@ -239,5 +239,168 @@ describe('static file serving', () => {
 
     const res = await rawGet(server.port, '/../../../../etc/passwd');
     expect(res.status).toBe(403);
+  });
+
+  it('answers malformed percent-encoding with 400 instead of crashing the process, and keeps serving after', async () => {
+    publicDir = await mkdtemp(join(tmpdir(), 'bridge-public-'));
+    await writeFile(join(publicDir, 'index.html'), '<h1>ok</h1>');
+    server = await startBridgeServer({ port: 0, publicDir });
+
+    const bad = await rawGet(server.port, '/%zz');
+    expect(bad.status).toBe(400);
+
+    // Value here isn't "the process is still alive" (vitest always is) — it's that the
+    // malformed request didn't leave the server or connection state broken for what follows.
+    const ok = await fetch(`http://localhost:${server.port}/index.html`);
+    expect(ok.status).toBe(200);
+  });
+
+  it('still decodes legitimate percent-encoded filenames after the malformed-encoding guard', async () => {
+    publicDir = await mkdtemp(join(tmpdir(), 'bridge-public-'));
+    await writeFile(join(publicDir, 'index.html'), '<h1>ok</h1>');
+    await writeFile(join(publicDir, 'a b.json'), '{"a":1}');
+    server = await startBridgeServer({ port: 0, publicDir });
+
+    const res = await rawGet(server.port, '/a%20b.json');
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects an encoded path-traversal attempt with 403 (decode runs before the traversal guard)', async () => {
+    publicDir = await mkdtemp(join(tmpdir(), 'bridge-public-'));
+    await writeFile(join(publicDir, 'index.html'), '<h1>ok</h1>');
+    server = await startBridgeServer({ port: 0, publicDir });
+
+    const res = await rawGet(server.port, '/%2e%2e/%2e%2e/etc/passwd');
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('wire-contract validation at the receive boundary', () => {
+  let traceDir: string | undefined;
+
+  afterEach(async () => {
+    if (traceDir) await rm(traceDir, { recursive: true, force: true });
+    traceDir = undefined;
+  });
+
+  it('survives a malformed trace message ({"type":"trace"} with no entry) instead of crashing, and keeps persisting the valid trace sent right after', async () => {
+    traceDir = await mkdtemp(join(tmpdir(), 'bridge-trace-'));
+    const traceOutPath = join(traceDir, 'trace.json');
+    server = await startBridgeServer({ port: 0, traceOutPath, traceCap: 300 });
+
+    const sender = new WebSocket(`ws://localhost:${server.port}/ws`);
+    const receiver = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await Promise.all([waitForOpen(sender), waitForOpen(receiver)]);
+
+    const relayed = waitForMessage(receiver);
+    // This 13-byte message alone used to synchronously crash the 'message' listener — see
+    // tracePersistence.ts's `record()` destructuring an `entry` that was actually `undefined`.
+    sender.send(JSON.stringify({ type: 'trace' }));
+
+    const validMessage: BridgeMessage = {
+      type: 'trace',
+      entry: { symbolId: 'sym', verb: 'next', span: { id: 'span-1' }, timestamp: 1 },
+    };
+    sender.send(JSON.stringify(validMessage));
+
+    // The valid message arriving at all on a separate socket is the proof the server stayed up
+    // through the malformed one instead of taking the process down.
+    await expect(relayed).resolves.toEqual(validMessage);
+
+    sender.close();
+    receiver.close();
+    await server.close();
+    server = undefined;
+
+    const persisted = JSON.parse(await readFile(traceOutPath, 'utf8')) as TraceStateValue;
+    expect(persisted.entries).toHaveLength(1);
+    expect(persisted.entries[0]).toEqual({ id: 0, symbolId: 'sym', verb: 'next', span: { id: 'span-1' }, timestamp: 1 });
+  });
+
+  it('does not relay a malformed trace message — a peer sees the valid trace sent right after arrive first, not the malformed one', async () => {
+    server = await startBridgeServer({ port: 0 });
+    const sender = new WebSocket(`ws://localhost:${server.port}/ws`);
+    const receiver = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await Promise.all([waitForOpen(sender), waitForOpen(receiver)]);
+
+    const firstReceived = waitForMessage(receiver);
+    sender.send(JSON.stringify({ type: 'trace' })); // entry missing — malformed
+    const validMessage: BridgeMessage = {
+      type: 'trace',
+      entry: { symbolId: 'sym', verb: 'next', span: { id: 'span-1' }, timestamp: 0 },
+    };
+    sender.send(JSON.stringify(validMessage));
+
+    // Per-connection message ordering plus the synchronous 'message' handler mean that if the
+    // malformed message above had been relayed, it would have arrived at `receiver` before
+    // `validMessage` — so `validMessage` arriving first is decisive proof the malformed one was
+    // dropped, rather than a "nothing arrived within N ms" assertion (which would be flaky).
+    await expect(firstReceived).resolves.toEqual(validMessage);
+
+    sender.close();
+    receiver.close();
+  });
+
+  it('does not cache a malformed catalog message ({"type":"catalog"} with no doc) — a late joiner sees only the valid catalog sent afterward, not a replay of the malformed one', async () => {
+    server = await startBridgeServer({ port: 0 });
+    const publisher = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await waitForOpen(publisher);
+
+    publisher.send(JSON.stringify({ type: 'catalog' })); // doc missing — malformed, must not be cached
+
+    const lateJoiner = new WebSocket(`ws://localhost:${server.port}/ws`);
+    const firstReceived = waitForMessage(lateJoiner);
+
+    const catalogMessage: BridgeMessage = { type: 'catalog', doc: CATALOG };
+    publisher.send(JSON.stringify(catalogMessage));
+
+    // If the malformed catalog above had been cached, it would have been replayed to `lateJoiner`
+    // on connect, before `catalogMessage` was even sent — so `catalogMessage` being the first (and
+    // only) message received is decisive proof the malformed one was never cached.
+    await expect(firstReceived).resolves.toEqual(catalogMessage);
+
+    publisher.close();
+    lateJoiner.close();
+  });
+
+  it('caches and replays a legitimate catalog normally even right after a poisoning attempt — the attempt leaves no lingering effect', async () => {
+    server = await startBridgeServer({ port: 0 });
+    const publisher = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await waitForOpen(publisher);
+
+    publisher.send(JSON.stringify({ type: 'catalog' })); // doc missing — malformed
+    const catalogMessage: BridgeMessage = { type: 'catalog', doc: CATALOG };
+    publisher.send(JSON.stringify(catalogMessage));
+
+    // Give the server a beat to process both sends before a joiner connects — this test is about
+    // replay-on-connect (the `cachedCatalogText` path), not send/receive ordering.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const lateJoiner = new WebSocket(`ws://localhost:${server.port}/ws`);
+    const replayed = waitForMessage(lateJoiner);
+    await expect(replayed).resolves.toEqual(catalogMessage);
+
+    publisher.close();
+    lateJoiner.close();
+  });
+
+  it('does not cache a catalog whose schemaVersion is below 6 (pre-guards kernelee) — a late joiner sees only the valid catalog sent afterward', async () => {
+    server = await startBridgeServer({ port: 0 });
+    const publisher = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await waitForOpen(publisher);
+
+    const staleCatalog = { type: 'catalog', doc: { ...CATALOG, schemaVersion: 5 } };
+    publisher.send(JSON.stringify(staleCatalog));
+
+    const lateJoiner = new WebSocket(`ws://localhost:${server.port}/ws`);
+    const firstReceived = waitForMessage(lateJoiner);
+
+    const catalogMessage: BridgeMessage = { type: 'catalog', doc: CATALOG };
+    publisher.send(JSON.stringify(catalogMessage));
+
+    await expect(firstReceived).resolves.toEqual(catalogMessage);
+
+    publisher.close();
+    lateJoiner.close();
   });
 });

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, extname, join, resolve as resolvePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket as WsClient } from 'ws';
-import type { BridgeMessage } from './protocol.js';
+import { isBridgeMessage } from './protocol.js';
 import { createTracePersistence, DEFAULT_TRACE_CAP } from './tracePersistence.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -82,23 +82,26 @@ export interface BridgeServer {
   close(): Promise<void>;
 }
 
-function isBridgeMessage(value: unknown): value is BridgeMessage {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const type = (value as { type?: unknown }).type;
-  return type === 'trace' || type === 'catalog';
-}
-
 /**
  * Serves any file under `publicDir` (the panel UI's HTML/JS/CSS, the bundled
  * sample catalog, the vendored relaph build) — not just `index.html`, since
  * the panel is more than one file. `/` and `/index.html` both resolve to
  * the page itself. Guards against path traversal by requiring the resolved
  * path stay within `publicDir` (a `join` alone would let `..` escape it).
+ * Malformed percent-encoding (e.g. `/%zz`) → 400, not a thrown/rejected
+ * promise — see the `decodeURIComponent` try/catch below.
  */
 async function serveStatic(publicDir: string, url: string, res: import('node:http').ServerResponse): Promise<void> {
-  const pathname = decodeURIComponent(url.split('?')[0] ?? '/');
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(url.split('?')[0] ?? '/');
+  } catch {
+    // 不正 percent-encoding はクライアント側の構文違反 — 事実の発生点で 400 を宣言する。
+    // 下の readFile の catch(404 = 「存在しない」)とは別の事実なので合流させない。
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('bad request');
+    return;
+  }
   const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
   const filePath = resolvePath(publicDir, relative);
   if (filePath !== publicDir && !filePath.startsWith(publicDir + sep)) {
@@ -182,13 +185,36 @@ async function servePanelConfig(
   res.end(body);
 }
 
+/** Longest prefix of a dropped message's raw text logged in a warning — long enough to identify
+ *  the sender's mistake, short enough that a misbehaving client spamming garbage can't flood logs
+ *  with arbitrarily large payloads. */
+const MAX_DROPPED_MESSAGE_LOG_LENGTH = 200;
+
+/**
+ * Warns and drops a WS message that failed the wire-contract check (unparseable JSON, or parsed
+ * but not a valid {@link BridgeMessage} — see `isBridgeMessage` in `protocol.ts`). Never cached,
+ * persisted, or relayed: the receiver is a validator of the contract, not a rescuer of malformed
+ * values further downstream. Not a silent drop — an unannounced drop would hide a sender's contract
+ * violation from whoever has to debug it, the same "dev tools speak through logs" convention
+ * `tracePersistence.ts` already uses for its own flush failures.
+ */
+function dropMessage(reason: string, text: string): void {
+  const truncated = text.length > MAX_DROPPED_MESSAGE_LOG_LENGTH
+    ? `${text.slice(0, MAX_DROPPED_MESSAGE_LOG_LENGTH)}…`
+    : text;
+  console.warn(`[kernelee-devtools-bridge] dropped ${reason}: ${truncated}`);
+}
+
 /**
  * The WS server + static placeholder-page host, combined into one Node
  * process (a browser can't host either half). No connection-role field
- * exists in the protocol: every socket is relayed to identically — the
- * "kernel" connection just happens to be the one sending `catalog`/`trace`
- * messages, and `catalog` is additionally cached so a late-joining socket
- * (a panel, or the placeholder page itself) gets replayed the last one seen.
+ * exists in the protocol: every **valid** message is relayed to all other
+ * sockets identically — the "kernel" connection just happens to be the one
+ * sending `catalog`/`trace` messages, and `catalog` is additionally cached so
+ * a late-joining socket (a panel, or the placeholder page itself) gets
+ * replayed the last one seen. Messages failing the wire-contract check
+ * (`isBridgeMessage` in `protocol.ts`) are dropped with a warning — never
+ * cached, persisted, or relayed.
  */
 export async function startBridgeServer(options: BridgeServerOptions = {}): Promise<BridgeServer> {
   const publicDir = resolvePath(options.publicDir ?? join(__dirname, '..', 'public'));
@@ -208,12 +234,20 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       void servePanelConfig(options.panelConfigPath, options.repoRoot, options.traceCap, res);
       return;
     }
+    // serveStatic never rejects — malformed percent-encoding is answered with a 400
+    // inside it, and every other failure path resolves after responding. This `void`
+    // relies on that invariant; a new throw point inside serveStatic breaks it.
     void serveStatic(publicDir, req.url ?? '/', res);
   });
 
   const wss = new WebSocketServer({ noServer: true });
   // Cached as the raw text it arrived as, not the parsed object — replaying
-  // it to late joiners and rebroadcasting it need no re-serialization.
+  // it to late joiners and rebroadcasting it need no re-serialization. This is
+  // required by protocol.ts's byte-identity contract, not merely an
+  // optimization: a receiver-side dedupe (e.g. the panel's) depends on an
+  // unchanged catalog arriving as the exact same bytes on every path.
+  // Invariant: only text that passed `isBridgeMessage` is ever stored here, so the replay path
+  // (`connection` handler below) needs — and must not grow — its own re-validation.
   let cachedCatalogText: string | undefined;
   // Only allocated when a target path is configured — see `BridgeServerOptions.traceOutPath`.
   const tracePersistence = options.traceOutPath === undefined
@@ -240,9 +274,11 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
       try {
         message = JSON.parse(text);
       } catch {
+        dropMessage('unparseable JSON', text);
         return;
       }
       if (!isBridgeMessage(message)) {
+        dropMessage('malformed BridgeMessage', text);
         return;
       }
       if (message.type === 'catalog') {
@@ -253,8 +289,8 @@ export async function startBridgeServer(options: BridgeServerOptions = {}): Prom
         // stop other panel clients from seeing the entry live.
         tracePersistence?.record(message.entry);
       }
-      // Forward the original text verbatim — no need to re-serialize what
-      // was only just parsed to inspect `type`.
+      // Forward the original text verbatim — validation only reads the parsed object, so relaying
+      // needs no re-serialization; only messages that passed `isBridgeMessage` reach this point.
       for (const client of wss.clients) {
         if (client !== ws && client.readyState === WsClient.OPEN) {
           client.send(text);

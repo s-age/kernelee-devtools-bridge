@@ -161,6 +161,60 @@ describe('trace persistence', () => {
     });
   });
 
+  it('creates missing parent directories on flush (default path lands under node_modules/.cache, which does not pre-exist)', async () => {
+    traceDir = await mkdtemp(join(tmpdir(), 'bridge-trace-'));
+    const traceOutPath = join(traceDir, 'nested', 'does', 'not', 'exist', 'trace.json');
+    server = await startBridgeServer({ port: 0, traceOutPath, traceCap: 300 });
+
+    const sender = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await waitForOpen(sender);
+
+    const message: BridgeMessage = {
+      type: 'trace',
+      entry: { symbolId: 'sym', verb: 'next', span: { id: 'span-1' }, timestamp: 0 },
+    };
+    sender.send(JSON.stringify(message));
+    await wait(PAST_FLUSH_DELAY_MS);
+
+    const persisted = await readTraceFile(traceOutPath);
+    expect(persisted.entries).toHaveLength(1);
+
+    sender.close();
+  });
+
+  it('self-repairs after its parent directory is removed mid-session (mkdir runs on every flush, not just once)', async () => {
+    traceDir = await mkdtemp(join(tmpdir(), 'bridge-trace-'));
+    const parentDir = join(traceDir, 'cache-dir');
+    const traceOutPath = join(parentDir, 'trace.json');
+    server = await startBridgeServer({ port: 0, traceOutPath, traceCap: 300 });
+
+    const sender = new WebSocket(`ws://localhost:${server.port}/ws`);
+    await waitForOpen(sender);
+
+    const first: BridgeMessage = {
+      type: 'trace',
+      entry: { symbolId: 'sym-1', verb: 'next', span: { id: 'span-1' }, timestamp: 0 },
+    };
+    sender.send(JSON.stringify(first));
+    await wait(PAST_FLUSH_DELAY_MS);
+    expect((await readTraceFile(traceOutPath)).entries).toHaveLength(1);
+
+    // Simulate `rm -rf node_modules` happening mid-session.
+    await rm(parentDir, { recursive: true, force: true });
+
+    const second: BridgeMessage = {
+      type: 'trace',
+      entry: { symbolId: 'sym-2', verb: 'next', span: { id: 'span-2' }, timestamp: 1 },
+    };
+    sender.send(JSON.stringify(second));
+    await wait(PAST_FLUSH_DELAY_MS);
+
+    const persisted = await readTraceFile(traceOutPath);
+    expect(persisted.entries.map((e) => e.symbolId)).toEqual(['sym-1', 'sym-2']);
+
+    sender.close();
+  });
+
   it('never writes a trace file when traceOutPath is unset (persistence stays opt-in at the server level)', async () => {
     traceDir = await mkdtemp(join(tmpdir(), 'bridge-trace-'));
     const traceOutPath = join(traceDir, 'trace.json');

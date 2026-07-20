@@ -94,6 +94,7 @@ function TimelineNode({
         )}
         <span className={`${styles.symbol}${isGate ? ` ${styles.symbolGate}` : ''}`}>{node.entry.symbolId}</span>
         <span className={`${styles.verb}${verbModifier}`}>{node.entry.verb}</span>
+        {node.entry.desc !== undefined && <span className={styles.desc}>{node.entry.desc}</span>}
         <span className={styles.ts}>{new Date(node.entry.timestamp).toLocaleTimeString()}</span>
       </div>
       {hasChildren && !isCollapsed && (

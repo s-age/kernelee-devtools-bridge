@@ -32,6 +32,12 @@ export const muted = style({
   color: '#57606a',
 });
 
+/** `.dd`, recolored red — an emissions-list `desc` cell whose site called `abort(value)`/
+ *  `fail(error)` with no desc argument (a real scanned fact, not "not scanned"; see
+ *  `IndexVerbEmission.desc`'s own doc comment). Reuses `verbFail`'s red family
+ *  (`Timeline.css.ts`) for the same "this needs attention" register. */
+export const descTodo = style([dd, { color: '#b42318', fontWeight: 600 }]);
+
 export const divertLinks = style({
   display: 'flex',
   flexWrap: 'wrap',
